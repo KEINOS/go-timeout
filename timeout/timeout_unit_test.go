@@ -3,6 +3,7 @@ package timeout
 import (
 	"bytes"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
@@ -306,6 +307,7 @@ func TestRunCommandForeground(t *testing.T) {
 	tests := []struct {
 		name       string
 		args       []string
+		run        func(t *testing.T, streams Streams) int
 		stdin      string
 		wantCode   int
 		wantStdout string
@@ -367,11 +369,8 @@ func TestRunCommandForeground(t *testing.T) {
 			wantStderr: "sending signal TERM",
 		},
 		{
-			name: "kill after",
-			args: []string{
-				"--foreground", "--kill-after=0.01s", "0.01s",
-				"sh", "-c", "trap '' TERM; while true; do :; done",
-			},
+			name:     "kill after",
+			run:      runTermIgnoringCommand,
 			wantCode: signalExitCode(syscall.SIGKILL),
 		},
 	}
@@ -382,17 +381,113 @@ func TestRunCommandForeground(t *testing.T) {
 
 			stdout := new(bytes.Buffer)
 			stderr := new(bytes.Buffer)
-
-			got := Run(tt.args, Streams{
+			streams := Streams{
 				Stdin:  strings.NewReader(tt.stdin),
 				Stdout: stdout,
 				Stderr: stderr,
-			})
+			}
+
+			var got int
+			if tt.run == nil {
+				got = Run(tt.args, streams)
+			} else {
+				got = tt.run(t, streams)
+			}
 
 			require.Equal(t, tt.wantCode, got)
 			require.Contains(t, stdout.String(), tt.wantStdout)
 			require.Contains(t, stderr.String(), tt.wantStderr)
 		})
+	}
+}
+
+func runTermIgnoringCommand(t *testing.T, streams Streams) int {
+	t.Helper()
+
+	dir := t.TempDir()
+	readyPath := filepath.Join(dir, "ready")
+	startPath := filepath.Join(dir, "start")
+
+	args := []string{
+		"--foreground", "--kill-after=0.1s", "0.5s",
+		"env", "GO_TIMEOUT_HELPER_PROCESS=term-ignore",
+		"GO_TIMEOUT_HELPER_READY=" + readyPath,
+		"GO_TIMEOUT_HELPER_START=" + startPath,
+		os.Args[0], "-test.run=TestTermIgnoringHelperProcess",
+	}
+
+	done := make(chan int, 1)
+	go func() {
+		done <- Run(args, streams)
+	}()
+
+	deadline := time.After(2 * time.Second)
+
+	for {
+		select {
+		case code := <-done:
+			require.Failf(
+				t,
+				"helper exited before it was ready",
+				"exit code: %d, stderr: %q",
+				code,
+				writerString(streams.Stderr),
+			)
+		case <-deadline:
+			require.Fail(t, "helper did not become ready")
+		default:
+			_, err := os.Stat(readyPath)
+			if err == nil {
+				require.NoError(t, os.WriteFile(startPath, nil, 0o600))
+
+				return <-done
+			}
+
+			require.ErrorIs(t, err, os.ErrNotExist)
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+func writerString(writer any) string {
+	stringer, ok := writer.(interface{ String() string })
+	if !ok {
+		return ""
+	}
+
+	return stringer.String()
+}
+
+func TestTermIgnoringHelperProcess(t *testing.T) {
+	t.Parallel()
+
+	if os.Getenv("GO_TIMEOUT_HELPER_PROCESS") != "term-ignore" {
+		return
+	}
+
+	readyPath := os.Getenv("GO_TIMEOUT_HELPER_READY")
+	startPath := os.Getenv("GO_TIMEOUT_HELPER_START")
+
+	require.NotEmpty(t, readyPath)
+	require.NotEmpty(t, startPath)
+
+	signal.Ignore(syscall.SIGTERM)
+	//nolint:gosec // The parent test passes temp file paths to this helper process.
+	require.NoError(t, os.WriteFile(readyPath, nil, 0o600))
+
+	for {
+		//nolint:gosec // The parent test passes temp file paths to this helper process.
+		_, err := os.Stat(startPath)
+		if err == nil {
+			break
+		}
+
+		require.ErrorIs(t, err, os.ErrNotExist)
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	for {
+		time.Sleep(time.Hour)
 	}
 }
 
