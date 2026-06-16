@@ -14,58 +14,58 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type parseTestCase struct {
+	name string
+	args []string
+	want Config
+}
+
+type parseUsageErrorTestCase struct {
+	name string
+	args []string
+}
+
+type parseDurationTestCase struct {
+	name string
+	in   string
+	want time.Duration
+}
+
+type parseSignalTestCase struct {
+	name string
+	in   string
+	want syscall.Signal
+}
+
+type runStaticOutputTestCase struct {
+	name       string
+	args       []string
+	wantCode   int
+	wantStdout string
+	wantStderr string
+}
+
+type versionFromBuildInfoTestCase struct {
+	name string
+	info *debug.BuildInfo
+	ok   bool
+	want string
+}
+
+type runCommandForegroundTestCase struct {
+	name       string
+	args       []string
+	run        func(t *testing.T, streams Streams) int
+	stdin      string
+	wantCode   int
+	wantStdout string
+	wantStderr string
+}
+
 func TestParse(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		args []string
-		want Config
-	}{
-		{
-			name: "parses command",
-			args: []string{"1s", "printf", "ok"},
-			want: Config{
-				Duration: 1 * time.Second,
-				Signal:   syscall.SIGTERM,
-				Command:  []string{"printf", "ok"},
-			},
-		},
-		{
-			name: "parses options before duration",
-			args: []string{"-fpv", "-k", "0.5s", "-s", "HUP", "2m", "sleep", "9"},
-			want: Config{
-				Foreground:     true,
-				PreserveStatus: true,
-				Verbose:        true,
-				Duration:       2 * time.Minute,
-				KillAfter:      500 * time.Millisecond,
-				Signal:         syscall.SIGHUP,
-				Command:        []string{"sleep", "9"},
-			},
-		},
-		{
-			name: "stops option parsing at duration",
-			args: []string{"0", "printf", "--help"},
-			want: Config{
-				Duration: 0,
-				Signal:   syscall.SIGTERM,
-				Command:  []string{"printf", "--help"},
-			},
-		},
-		{
-			name: "parses long option values",
-			args: []string{"--kill-after=1s", "--signal=SIGUSR1", "3", "sleep", "4"},
-			want: Config{
-				Duration:  3 * time.Second,
-				KillAfter: 1 * time.Second,
-				Signal:    syscall.SIGUSR1,
-				Command:   []string{"sleep", "4"},
-			},
-		},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range parseTestCases {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -80,21 +80,7 @@ func TestParse(t *testing.T) {
 func TestParseUsageErrors(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		args []string
-	}{
-		{name: "missing duration", args: nil},
-		{name: "missing command", args: []string{"1s"}},
-		{name: "unknown option", args: []string{"--bogus"}},
-		{name: "missing signal argument", args: []string{"--signal"}},
-		{name: "missing kill after argument", args: []string{"-k"}},
-		{name: "invalid duration", args: []string{"bad", "true"}},
-		{name: "invalid kill after", args: []string{"--kill-after=bad", "1s", "true"}},
-		{name: "invalid signal", args: []string{"--signal=NOPE", "1s", "true"}},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range parseUsageErrorTestCases {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -109,21 +95,7 @@ func TestParseUsageErrors(t *testing.T) {
 func TestParseDuration(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		in   string
-		want time.Duration
-	}{
-		{name: "seconds without suffix", in: "2", want: 2 * time.Second},
-		{name: "seconds suffix", in: "2s", want: 2 * time.Second},
-		{name: "minutes suffix", in: "1.5m", want: 90 * time.Second},
-		{name: "hours suffix", in: "0.5h", want: 30 * time.Minute},
-		{name: "days suffix", in: "1d", want: 24 * time.Hour},
-		{name: "zero disables", in: "0", want: 0},
-		{name: "huge positive clamps", in: "1e999d", want: maxDuration},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range parseDurationTestCases {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -138,7 +110,7 @@ func TestParseDuration(t *testing.T) {
 func TestParseDurationRejectsInvalidInput(t *testing.T) {
 	t.Parallel()
 
-	for _, input := range []string{"", "-1", "NaN", "Inf", "1ms", "1sec", "abc"} {
+	for _, input := range invalidDurationInputs {
 		t.Run(input, func(t *testing.T) {
 			t.Parallel()
 
@@ -153,18 +125,7 @@ func TestParseDurationRejectsInvalidInput(t *testing.T) {
 func TestParseSignal(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		in   string
-		want syscall.Signal
-	}{
-		{name: "name", in: "TERM", want: syscall.SIGTERM},
-		{name: "sig prefix", in: "SIGTERM", want: syscall.SIGTERM},
-		{name: "lowercase", in: "term", want: syscall.SIGTERM},
-		{name: "number", in: "15", want: syscall.SIGTERM},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range parseSignalTestCases {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -203,37 +164,7 @@ func TestAppendSignalIfMissing(t *testing.T) {
 func TestRunStaticOutput(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name       string
-		args       []string
-		wantCode   int
-		wantStdout string
-		wantStderr string
-	}{
-		{
-			name:       "help",
-			args:       []string{"--help"},
-			wantCode:   ExitSuccess,
-			wantStdout: "Usage:",
-			wantStderr: "",
-		},
-		{
-			name:       "version",
-			args:       []string{"--version"},
-			wantCode:   ExitSuccess,
-			wantStdout: "timeout",
-			wantStderr: "",
-		},
-		{
-			name:       "usage error",
-			args:       nil,
-			wantCode:   ExitInternalFailure,
-			wantStdout: "",
-			wantStderr: "missing operand",
-		},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range runStaticOutputTestCases {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -256,41 +187,7 @@ func TestRunStaticOutput(t *testing.T) {
 func TestVersionFromBuildInfo(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		info *debug.BuildInfo
-		ok   bool
-		want string
-	}{
-		{
-			name: "uses module version",
-			info: &debug.BuildInfo{
-				Main: debug.Module{
-					Version: "v1.2.3",
-				},
-			},
-			ok:   true,
-			want: "v1.2.3",
-		},
-		{
-			name: "falls back when version is empty",
-			info: &debug.BuildInfo{
-				Main: debug.Module{
-					Version: "",
-				},
-			},
-			ok:   true,
-			want: defaultVersion,
-		},
-		{
-			name: "falls back when unavailable",
-			info: nil,
-			ok:   false,
-			want: defaultVersion,
-		},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range versionFromBuildInfoTestCases {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -304,78 +201,7 @@ func TestVersionFromBuildInfo(t *testing.T) {
 func TestRunCommandForeground(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name       string
-		args       []string
-		run        func(t *testing.T, streams Streams) int
-		stdin      string
-		wantCode   int
-		wantStdout string
-		wantStderr string
-	}{
-		{
-			name:       "success",
-			args:       []string{"--foreground", "0", "printf", "ok"},
-			wantCode:   ExitSuccess,
-			wantStdout: "ok",
-		},
-		{
-			name:       "stdin passthrough",
-			args:       []string{"--foreground", "0", "cat"},
-			stdin:      "input",
-			wantCode:   ExitSuccess,
-			wantStdout: "input",
-		},
-		{
-			name:     "exit status",
-			args:     []string{"--foreground", "0", "sh", "-c", "exit 42"},
-			wantCode: 42,
-		},
-		{
-			name:       "stderr passthrough",
-			args:       []string{"--foreground", "0", "sh", "-c", "printf err >&2"},
-			wantCode:   ExitSuccess,
-			wantStderr: "err",
-		},
-		{
-			name:       "not found",
-			args:       []string{"--foreground", "0", "go-timeout-command-not-found"},
-			wantCode:   ExitNotFound,
-			wantStderr: "failed to run command",
-		},
-		{
-			name:       "absolute path not found",
-			args:       []string{"--foreground", "0", "/tmp/go-timeout-command-not-found"},
-			wantCode:   ExitNotFound,
-			wantStderr: "failed to run command",
-		},
-		{
-			name:     "timeout",
-			args:     []string{"--foreground", "0.01s", "sleep", "1"},
-			wantCode: ExitTimedOut,
-		},
-		{
-			name: "preserve status",
-			args: []string{
-				"--foreground", "--preserve-status", "0.01s",
-				"sh", "-c", "trap 'exit 42' TERM; while true; do :; done",
-			},
-			wantCode: 42,
-		},
-		{
-			name:       "verbose signal",
-			args:       []string{"--foreground", "--verbose", "0.01s", "sleep", "1"},
-			wantCode:   ExitTimedOut,
-			wantStderr: "sending signal TERM",
-		},
-		{
-			name:     "kill after",
-			run:      runTermIgnoringCommand,
-			wantCode: signalExitCode(syscall.SIGKILL),
-		},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range runCommandForegroundTestCases {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -525,4 +351,196 @@ func TestRunCommandRejectsInvalidExecutableFormat(t *testing.T) {
 
 	require.Equal(t, ExitCannotInvoke, got)
 	require.Contains(t, stderr.String(), "failed to run command")
+}
+
+/* Data Providers */
+
+var parseTestCases = []parseTestCase{
+	{
+		name: "parses command",
+		args: []string{"1s", "printf", "ok"},
+		want: Config{
+			Duration: 1 * time.Second,
+			Signal:   syscall.SIGTERM,
+			Command:  []string{"printf", "ok"},
+		},
+	},
+	{
+		name: "parses options before duration",
+		args: []string{"-fpv", "-k", "0.5s", "-s", "HUP", "2m", "sleep", "9"},
+		want: Config{
+			Foreground:     true,
+			PreserveStatus: true,
+			Verbose:        true,
+			Duration:       2 * time.Minute,
+			KillAfter:      500 * time.Millisecond,
+			Signal:         syscall.SIGHUP,
+			Command:        []string{"sleep", "9"},
+		},
+	},
+	{
+		name: "stops option parsing at duration",
+		args: []string{"0", "printf", "--help"},
+		want: Config{
+			Duration: 0,
+			Signal:   syscall.SIGTERM,
+			Command:  []string{"printf", "--help"},
+		},
+	},
+	{
+		name: "parses long option values",
+		args: []string{"--kill-after=1s", "--signal=SIGUSR1", "3", "sleep", "4"},
+		want: Config{
+			Duration:  3 * time.Second,
+			KillAfter: 1 * time.Second,
+			Signal:    syscall.SIGUSR1,
+			Command:   []string{"sleep", "4"},
+		},
+	},
+}
+
+var parseUsageErrorTestCases = []parseUsageErrorTestCase{
+	{name: "missing duration", args: nil},
+	{name: "missing command", args: []string{"1s"}},
+	{name: "unknown option", args: []string{"--bogus"}},
+	{name: "missing signal argument", args: []string{"--signal"}},
+	{name: "missing kill after argument", args: []string{"-k"}},
+	{name: "invalid duration", args: []string{"bad", "true"}},
+	{name: "invalid kill after", args: []string{"--kill-after=bad", "1s", "true"}},
+	{name: "invalid signal", args: []string{"--signal=NOPE", "1s", "true"}},
+}
+
+var parseDurationTestCases = []parseDurationTestCase{
+	{name: "seconds without suffix", in: "2", want: 2 * time.Second},
+	{name: "seconds suffix", in: "2s", want: 2 * time.Second},
+	{name: "minutes suffix", in: "1.5m", want: 90 * time.Second},
+	{name: "hours suffix", in: "0.5h", want: 30 * time.Minute},
+	{name: "days suffix", in: "1d", want: 24 * time.Hour},
+	{name: "zero disables", in: "0", want: 0},
+	{name: "huge positive clamps", in: "1e999d", want: maxDuration},
+}
+
+var invalidDurationInputs = []string{"", "-1", "NaN", "Inf", "1ms", "1sec", "abc"}
+
+var parseSignalTestCases = []parseSignalTestCase{
+	{name: "name", in: "TERM", want: syscall.SIGTERM},
+	{name: "sig prefix", in: "SIGTERM", want: syscall.SIGTERM},
+	{name: "lowercase", in: "term", want: syscall.SIGTERM},
+	{name: "number", in: "15", want: syscall.SIGTERM},
+}
+
+var runStaticOutputTestCases = []runStaticOutputTestCase{
+	{
+		name:       "help",
+		args:       []string{"--help"},
+		wantCode:   ExitSuccess,
+		wantStdout: "Usage:",
+		wantStderr: "",
+	},
+	{
+		name:       "version",
+		args:       []string{"--version"},
+		wantCode:   ExitSuccess,
+		wantStdout: "timeout",
+		wantStderr: "",
+	},
+	{
+		name:       "usage error",
+		args:       nil,
+		wantCode:   ExitInternalFailure,
+		wantStdout: "",
+		wantStderr: "missing operand",
+	},
+}
+
+var versionFromBuildInfoTestCases = []versionFromBuildInfoTestCase{
+	{
+		name: "uses module version",
+		info: &debug.BuildInfo{
+			Main: debug.Module{
+				Version: "v1.2.3",
+			},
+		},
+		ok:   true,
+		want: "v1.2.3",
+	},
+	{
+		name: "falls back when version is empty",
+		info: &debug.BuildInfo{
+			Main: debug.Module{
+				Version: "",
+			},
+		},
+		ok:   true,
+		want: defaultVersion,
+	},
+	{
+		name: "falls back when unavailable",
+		info: nil,
+		ok:   false,
+		want: defaultVersion,
+	},
+}
+
+var runCommandForegroundTestCases = []runCommandForegroundTestCase{
+	{
+		name:       "success",
+		args:       []string{"--foreground", "0", "printf", "ok"},
+		wantCode:   ExitSuccess,
+		wantStdout: "ok",
+	},
+	{
+		name:       "stdin passthrough",
+		args:       []string{"--foreground", "0", "cat"},
+		stdin:      "input",
+		wantCode:   ExitSuccess,
+		wantStdout: "input",
+	},
+	{
+		name:     "exit status",
+		args:     []string{"--foreground", "0", "sh", "-c", "exit 42"},
+		wantCode: 42,
+	},
+	{
+		name:       "stderr passthrough",
+		args:       []string{"--foreground", "0", "sh", "-c", "printf err >&2"},
+		wantCode:   ExitSuccess,
+		wantStderr: "err",
+	},
+	{
+		name:       "not found",
+		args:       []string{"--foreground", "0", "go-timeout-command-not-found"},
+		wantCode:   ExitNotFound,
+		wantStderr: "failed to run command",
+	},
+	{
+		name:       "absolute path not found",
+		args:       []string{"--foreground", "0", "/tmp/go-timeout-command-not-found"},
+		wantCode:   ExitNotFound,
+		wantStderr: "failed to run command",
+	},
+	{
+		name:     "timeout",
+		args:     []string{"--foreground", "0.01s", "sleep", "1"},
+		wantCode: ExitTimedOut,
+	},
+	{
+		name: "preserve status",
+		args: []string{
+			"--foreground", "--preserve-status", "0.01s",
+			"sh", "-c", "trap 'exit 42' TERM; while true; do :; done",
+		},
+		wantCode: 42,
+	},
+	{
+		name:       "verbose signal",
+		args:       []string{"--foreground", "--verbose", "0.01s", "sleep", "1"},
+		wantCode:   ExitTimedOut,
+		wantStderr: "sending signal TERM",
+	},
+	{
+		name:     "kill after",
+		run:      runTermIgnoringCommand,
+		wantCode: signalExitCode(syscall.SIGKILL),
+	},
 }
