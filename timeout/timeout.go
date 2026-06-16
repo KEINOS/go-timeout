@@ -41,9 +41,9 @@ const maxDuration = time.Duration(math.MaxInt64)
 // ErrUsage marks command-line usage errors.
 var ErrUsage = errors.New("usage error")
 
-var debugReadBuildInfo = debug.ReadBuildInfo //nolint:gochecknoglobals // overridden by tests when needed.
+var debugReadBuildInfo = debug.ReadBuildInfo
 
-var supportedSignals = map[string]syscall.Signal{ //nolint:gochecknoglobals // immutable lookup table.
+var supportedSignals = map[string]syscall.Signal{
 	"HUP":  syscall.SIGHUP,
 	"INT":  syscall.SIGINT,
 	"QUIT": syscall.SIGQUIT,

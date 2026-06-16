@@ -7,7 +7,7 @@ import (
 	"github.com/KEINOS/go-timeout/timeout"
 )
 
-var osExit = os.Exit //nolint:gochecknoglobals // overridden by tests.
+var osExit = os.Exit
 
 func main() {
 	osExit(run(os.Args[1:]))
