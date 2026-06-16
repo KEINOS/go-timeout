@@ -1,0 +1,13 @@
+name: version
+timeout: 10s
+
+cases:
+  - name: show version
+    args: ["--version"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        contains: ["timeout"]
+      stderr:
+        equals: ""

@@ -1,0 +1,40 @@
+name: usage errors
+timeout: 10s
+
+cases:
+  - name: missing duration
+    args: []
+    stdin: ""
+    want:
+      exit_code: 125
+      stdout:
+        equals: ""
+      stderr:
+        contains: ["missing operand"]
+  - name: missing command
+    args: ["1s"]
+    stdin: ""
+    want:
+      exit_code: 125
+      stdout:
+        equals: ""
+      stderr:
+        contains: ["missing command"]
+  - name: unknown option
+    args: ["--bogus"]
+    stdin: ""
+    want:
+      exit_code: 125
+      stdout:
+        equals: ""
+      stderr:
+        contains: ["unrecognized option"]
+  - name: option parsing stops at duration
+    args: ["0", "sh", "-c", "printf %s \"$1\"", "sh", "--help"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "--help"
+      stderr:
+        equals: ""

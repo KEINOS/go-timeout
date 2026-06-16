@@ -1,0 +1,22 @@
+name: kill after
+timeout: 10s
+
+cases:
+  - name: non foreground kill may kill monitor
+    args: ["--kill-after=0.1s", "0.1s", "sh", "-c", "trap '' TERM; while true; do :; done"]
+    stdin: ""
+    want:
+      exit_code: 137
+      stdout:
+        equals: ""
+      stderr:
+        equals: ""
+  - name: sends kill after ignored timeout signal
+    args: ["--foreground", "--kill-after=0.1s", "0.1s", "sh", "-c", "trap '' TERM; while true; do :; done"]
+    stdin: ""
+    want:
+      exit_code: 137
+      stdout:
+        equals: ""
+      stderr:
+        equals: ""

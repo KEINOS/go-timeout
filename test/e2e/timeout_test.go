@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 	"unicode"
@@ -47,7 +48,6 @@ var errMultipleYAMLDocuments = errors.New("scenario file must contain exactly on
 func TestTimeout(t *testing.T) {
 	t.Parallel()
 
-	// TIMEOUT_BIN を読んで exec.CommandContext で実行
 	pathTimeoutBin := getPathTargetBin(t)
 	pathTestScenariosDir := getPathDirTestScenarios(t)
 
@@ -315,6 +315,9 @@ func runTestCase(t *testing.T, pathTimeoutBin string, timeout time.Duration, tes
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
+			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+				exitCode = 128 + int(status.Signal())
+			}
 		} else {
 			require.NoError(t, err, "failed to run command")
 		}

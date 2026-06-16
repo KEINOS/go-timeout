@@ -1,0 +1,40 @@
+name: duration
+timeout: 10s
+
+cases:
+  - name: fractional seconds allow quick command
+    args: ["0.5s", "printf", "ok"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "ok"
+      stderr:
+        equals: ""
+  - name: zero disables timeout
+    args: ["0", "sh", "-c", "sleep 0.1; printf ok"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "ok"
+      stderr:
+        equals: ""
+  - name: invalid duration
+    args: ["1ms", "true"]
+    stdin: ""
+    want:
+      exit_code: 125
+      stdout:
+        equals: ""
+      stderr:
+        contains: ["invalid duration"]
+  - name: default timeout exits 124
+    args: ["0.1s", "sleep", "2"]
+    stdin: ""
+    want:
+      exit_code: 124
+      stdout:
+        equals: ""
+      stderr:
+        equals: ""

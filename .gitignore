@@ -23,7 +23,7 @@
 # Root docs.
 !README.md
 !CONTRIBUTING.md
-!LICENSE.md
+!LICENSE.txt
 
 # Go module files.
 !go.mod

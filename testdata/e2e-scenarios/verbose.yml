@@ -1,0 +1,13 @@
+name: verbose
+timeout: 10s
+
+cases:
+  - name: reports sent timeout signal
+    args: ["--foreground", "--verbose", "0.1s", "sleep", "2"]
+    stdin: ""
+    want:
+      exit_code: 124
+      stdout:
+        equals: ""
+      stderr:
+        contains: ["sending signal TERM", "sleep"]

@@ -1,0 +1,58 @@
+name: command execution
+timeout: 10s
+
+cases:
+  - name: stdout passthrough
+    args: ["0", "printf", "hello"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "hello"
+      stderr:
+        equals: ""
+  - name: stderr passthrough
+    args: ["0", "sh", "-c", "printf err >&2"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: ""
+      stderr:
+        equals: "err"
+  - name: stdin passthrough
+    args: ["0", "cat"]
+    stdin: "input"
+    want:
+      exit_code: 0
+      stdout:
+        equals: "input"
+      stderr:
+        equals: ""
+  - name: command exit status
+    args: ["0", "sh", "-c", "exit 42"]
+    stdin: ""
+    want:
+      exit_code: 42
+      stdout:
+        equals: ""
+      stderr:
+        equals: ""
+  - name: command not found
+    args: ["0", "go-timeout-command-not-found"]
+    stdin: ""
+    want:
+      exit_code: 127
+      stdout:
+        equals: ""
+      stderr:
+        contains: ["failed to run command"]
+  - name: absolute command path not found
+    args: ["0", "/tmp/go-timeout-command-not-found"]
+    stdin: ""
+    want:
+      exit_code: 127
+      stdout:
+        equals: ""
+      stderr:
+        contains: ["failed to run command"]

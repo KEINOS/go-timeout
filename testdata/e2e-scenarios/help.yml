@@ -8,6 +8,6 @@ cases:
     want:
       exit_code: 0
       stdout:
-        contains: ["Hello"]
+        contains: ["Usage:", "timeout [OPTION]... DURATION COMMAND"]
       stderr:
         equals: ""

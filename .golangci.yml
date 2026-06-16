@@ -9,8 +9,15 @@ linters:
     # Deprecated linters
     - wsl
     - gomodguard
-    # Disable due to the external dependency
+    # Disabled by project policy
     - depguard
+    - testpackage
+    # Too noisy for CLI parser tables and tests in this project.
+    - cyclop
+    - exhaustruct
+    - funlen
+    - goconst
+    - mnd
   settings:
     paralleltest:
       ignore-missing: false

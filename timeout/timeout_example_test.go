@@ -1,18 +1,40 @@
 package timeout_test
 
 import (
-	"errors"
+	"bytes"
 	"fmt"
 
 	"github.com/KEINOS/go-timeout/timeout"
 )
 
-//nolint:err113 // allow define dynmaic error for example test
-func ExamplePlaceholder() {
-	errDummy := errors.New("This is a placeholder error")
+func ExampleParse() {
+	config, err := timeout.Parse([]string{"-k", "1s", "-s", "TERM", "2s", "printf", "ok"})
 
-	result := timeout.Placeholder(errDummy)
-	fmt.Println(result)
+	fmt.Println(err)
+	fmt.Println(config.KillAfter)
+	fmt.Println(config.Duration)
+	fmt.Println(config.Command)
+	// Output:
+	// <nil>
+	// 1s
+	// 2s
+	// [printf ok]
+}
+
+func ExampleRun_help() {
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	code := timeout.Run([]string{"--help"}, timeout.Streams{
+		Stdout: stdout,
+		Stderr: stderr,
+	})
+
+	fmt.Println(code)
+	fmt.Println(stderr.String())
+	fmt.Println(stdout.String()[:6])
+	// Output:
+	// 0
 	//
-	// Output: This is a placeholder error
+	// Usage:
 }

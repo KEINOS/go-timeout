@@ -1,0 +1,40 @@
+name: signal
+timeout: 10s
+
+cases:
+  - name: signal name is accepted
+    args: ["--signal=TERM", "0.5s", "printf", "ok"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "ok"
+      stderr:
+        equals: ""
+  - name: sig-prefixed signal is accepted
+    args: ["--signal=SIGTERM", "0.5s", "printf", "ok"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "ok"
+      stderr:
+        equals: ""
+  - name: invalid signal
+    args: ["--signal=NOPE", "1s", "true"]
+    stdin: ""
+    want:
+      exit_code: 125
+      stdout:
+        equals: ""
+      stderr:
+        contains: ["invalid signal"]
+  - name: unsupported signal number
+    args: ["--signal=999", "1s", "true"]
+    stdin: ""
+    want:
+      exit_code: 125
+      stdout:
+        equals: ""
+      stderr:
+        contains: ["invalid signal"]
