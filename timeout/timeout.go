@@ -102,15 +102,21 @@ type lockedWriter struct {
 	writer io.Writer
 }
 
+type groupSignalFunc func(int, syscall.Signal)
+
+type processSignalFunc func(*exec.Cmd, syscall.Signal)
+
 type runnerState struct {
-	streams    Streams
-	suppressBy time.Time
-	config     Config
-	pgid       int
-	suppressed syscall.Signal
-	timedOut   bool
-	killSent   bool
-	signalSent bool
+	streams       Streams
+	suppressBy    time.Time
+	signalGroup   groupSignalFunc
+	signalProcess processSignalFunc
+	config        Config
+	pgid          int
+	suppressed    syscall.Signal
+	timedOut      bool
+	killSent      bool
+	signalSent    bool
 }
 
 // Parse parses timeout command-line arguments.
@@ -364,7 +370,7 @@ func (state *runnerState) sendSignal(cmd *exec.Cmd, sig syscall.Signal) {
 	}
 
 	if state.config.Foreground {
-		_ = cmd.Process.Signal(sig)
+		state.sendProcessSignal(cmd, sig)
 
 		return
 	}
@@ -372,31 +378,51 @@ func (state *runnerState) sendSignal(cmd *exec.Cmd, sig syscall.Signal) {
 	// GNU timeout sends the signal both to the monitored process and to the
 	// shared process group. The direct signal covers edge cases where the command
 	// has changed process groups; SIGCONT below follows the same policy.
-	_ = cmd.Process.Signal(sig)
-	_ = syscall.Kill(-state.pgid, sig)
+	state.sendProcessSignal(cmd, sig)
+	state.sendGroupSignal(sig)
 	state.suppressed = sig
 	state.suppressBy = time.Now().Add(signalSuppressionDuration)
 
-	if sig != syscall.SIGKILL && sig != syscall.SIGCONT {
-		_ = cmd.Process.Signal(syscall.SIGCONT)
-		_ = syscall.Kill(-state.pgid, syscall.SIGCONT)
+	if shouldResumeAfterSignal(sig) {
+		state.sendProcessSignal(cmd, syscall.SIGCONT)
+		state.sendGroupSignal(syscall.SIGCONT)
 	}
 }
 
-func (state *runnerState) startErrorExitCode(err error) int {
-	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
-		_, _ = fmt.Fprintf(state.streams.Stderr, "timeout: failed to run command %q: %v\n", state.config.Command[0], err)
+func (state *runnerState) sendProcessSignal(cmd *exec.Cmd, sig syscall.Signal) {
+	signalProcess := state.signalProcess
+	if signalProcess == nil {
+		signalProcess = defaultProcessSignal
+	}
 
+	signalProcess(cmd, sig)
+}
+
+func (state *runnerState) sendGroupSignal(sig syscall.Signal) {
+	signalGroup := state.signalGroup
+	if signalGroup == nil {
+		signalGroup = defaultGroupSignal
+	}
+
+	signalGroup(state.pgid, sig)
+}
+
+func (state *runnerState) startErrorExitCode(err error) int {
+	exitCode := classifyStartError(err)
+
+	_, _ = fmt.Fprintf(state.streams.Stderr, "timeout: failed to run command %q: %v\n", state.config.Command[0], err)
+
+	return exitCode
+}
+
+func classifyStartError(err error) int {
+	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 		return ExitNotFound
 	}
 
 	if errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.ENOEXEC) {
-		_, _ = fmt.Fprintf(state.streams.Stderr, "timeout: failed to run command %q: %v\n", state.config.Command[0], err)
-
 		return ExitCannotInvoke
 	}
-
-	_, _ = fmt.Fprintf(state.streams.Stderr, "timeout: failed to run command %q: %v\n", state.config.Command[0], err)
 
 	return ExitInternalFailure
 }
@@ -535,6 +561,18 @@ func parseDurationNumber(number string) (float64, error) {
 	}
 
 	return parsed, nil
+}
+
+func defaultGroupSignal(pgid int, sig syscall.Signal) {
+	// GNU timeout treats signal delivery as best effort; the command may have
+	// already exited or changed process groups by the time the signal is sent.
+	_ = syscall.Kill(-pgid, sig)
+}
+
+func defaultProcessSignal(cmd *exec.Cmd, sig syscall.Signal) {
+	// GNU timeout treats signal delivery as best effort; the command may have
+	// already exited by the time the signal is sent.
+	_ = cmd.Process.Signal(sig)
 }
 
 func appendSignalIfMissing(signals []os.Signal, sig syscall.Signal) []os.Signal {
@@ -802,6 +840,10 @@ func signalName(sig syscall.Signal) string {
 	}
 
 	return sig.String()
+}
+
+func shouldResumeAfterSignal(sig syscall.Signal) bool {
+	return sig != syscall.SIGKILL && sig != syscall.SIGCONT
 }
 
 func stopTimer(timer *time.Timer) {

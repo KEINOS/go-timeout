@@ -2,7 +2,9 @@ package timeout
 
 import (
 	"bytes"
+	"errors"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
@@ -25,6 +27,12 @@ const (
 
 	durationFastTimeout = "0.01s"
 )
+
+// ============================================================================
+//  Variables Section
+// ============================================================================
+
+var errTestStartFailure = errors.New("test start failure")
 
 // ============================================================================
 //  Test Section
@@ -127,6 +135,153 @@ func TestAppendSignalIfMissing(t *testing.T) {
 	got = appendSignalIfMissing(got, syscall.SIGHUP)
 
 	require.Equal(t, []os.Signal{syscall.SIGTERM, syscall.SIGHUP}, got)
+}
+
+func TestSendSignalForeground(t *testing.T) {
+	t.Parallel()
+
+	recorder := newSignalRecorder()
+	state := new(runnerState)
+	state.config.Foreground = true
+	state.signalProcess = recorder.process
+	state.signalGroup = recorder.group
+
+	state.sendSignal(new(exec.Cmd), syscall.SIGTERM)
+
+	require.True(t, state.signalSent)
+	require.Equal(t, []syscall.Signal{syscall.SIGTERM}, recorder.processSignals)
+	require.Empty(t, recorder.groupSignals)
+	require.Zero(t, state.suppressed)
+}
+
+func TestSendSignalBackground(t *testing.T) {
+	t.Parallel()
+
+	recorder := newSignalRecorder()
+	state := new(runnerState)
+	state.pgid = os.Getpid()
+	state.signalProcess = recorder.process
+	state.signalGroup = recorder.group
+
+	state.sendSignal(new(exec.Cmd), syscall.SIGTERM)
+
+	require.True(t, state.signalSent)
+	require.Equal(t, []syscall.Signal{syscall.SIGTERM, syscall.SIGCONT}, recorder.processSignals)
+	require.Equal(t, []syscall.Signal{syscall.SIGTERM, syscall.SIGCONT}, recorder.groupSignals)
+	require.Equal(t, syscall.SIGTERM, state.suppressed)
+	require.NotZero(t, state.suppressBy)
+}
+
+func TestSendSignalBackgroundDoesNotResumeForKillOrCont(t *testing.T) {
+	t.Parallel()
+
+	for _, sig := range []syscall.Signal{syscall.SIGKILL, syscall.SIGCONT} {
+		t.Run(signalName(sig), func(t *testing.T) {
+			t.Parallel()
+
+			recorder := newSignalRecorder()
+			state := new(runnerState)
+			state.pgid = os.Getpid()
+			state.signalProcess = recorder.process
+			state.signalGroup = recorder.group
+
+			state.sendSignal(new(exec.Cmd), sig)
+
+			require.Equal(t, []syscall.Signal{sig}, recorder.processSignals)
+			require.Equal(t, []syscall.Signal{sig}, recorder.groupSignals)
+		})
+	}
+}
+
+func TestShouldSuppress(t *testing.T) {
+	t.Parallel()
+
+	t.Run("different signal", func(t *testing.T) {
+		t.Parallel()
+
+		state := new(runnerState)
+		state.suppressed = syscall.SIGTERM
+		state.suppressBy = time.Now().Add(time.Minute)
+
+		require.False(t, state.shouldSuppress(syscall.SIGHUP))
+	})
+
+	t.Run("expired window", func(t *testing.T) {
+		t.Parallel()
+
+		state := new(runnerState)
+		state.suppressed = syscall.SIGTERM
+		state.suppressBy = time.Now().Add(-time.Minute)
+
+		require.False(t, state.shouldSuppress(syscall.SIGTERM))
+		require.Zero(t, state.suppressed)
+	})
+
+	t.Run("active window", func(t *testing.T) {
+		t.Parallel()
+
+		state := new(runnerState)
+		state.suppressed = syscall.SIGTERM
+		state.suppressBy = time.Now().Add(time.Minute)
+
+		require.True(t, state.shouldSuppress(syscall.SIGTERM))
+	})
+}
+
+func TestForwardSignal(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ignores non syscall signal", func(t *testing.T) {
+		t.Parallel()
+
+		state := new(runnerState)
+		state.forwardSignal(new(exec.Cmd), fakeSignal("custom"), newStoppedTimer())
+
+		require.False(t, state.signalSent)
+	})
+
+	t.Run("ignores suppressed signal", func(t *testing.T) {
+		t.Parallel()
+
+		state := new(runnerState)
+		state.suppressed = syscall.SIGTERM
+		state.suppressBy = time.Now().Add(time.Minute)
+		state.forwardSignal(new(exec.Cmd), syscall.SIGTERM, newStoppedTimer())
+
+		require.False(t, state.signalSent)
+	})
+
+	t.Run("forwards and starts kill timer", func(t *testing.T) {
+		t.Parallel()
+
+		recorder := newSignalRecorder()
+		timer := newStoppedTimer()
+		state := new(runnerState)
+		state.config.KillAfter = time.Hour
+		state.signalProcess = recorder.process
+		state.signalGroup = recorder.group
+
+		state.forwardSignal(new(exec.Cmd), syscall.SIGTERM, timer)
+		defer stopTimer(timer)
+
+		require.True(t, state.signalSent)
+		require.Equal(t, []syscall.Signal{syscall.SIGTERM, syscall.SIGCONT}, recorder.processSignals)
+		require.Equal(t, []syscall.Signal{syscall.SIGTERM, syscall.SIGCONT}, recorder.groupSignals)
+	})
+}
+
+func TestClassifyStartError(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range classifyStartErrorTestCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := classifyStartError(tt.err)
+
+			require.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func TestRunStaticOutput(t *testing.T) {
@@ -319,6 +474,37 @@ type runCommandForegroundTestCase struct {
 	wantStderr string
 	args       []string
 	wantCode   int
+}
+
+type classifyStartErrorTestCase struct {
+	err  error
+	name string
+	want int
+}
+
+type fakeSignal string
+
+type signalRecorder struct {
+	processSignals []syscall.Signal
+	groupSignals   []syscall.Signal
+}
+
+func (signal fakeSignal) Signal() {}
+
+func (signal fakeSignal) String() string {
+	return string(signal)
+}
+
+func newSignalRecorder() *signalRecorder {
+	return new(signalRecorder)
+}
+
+func (recorder *signalRecorder) process(_ *exec.Cmd, sig syscall.Signal) {
+	recorder.processSignals = append(recorder.processSignals, sig)
+}
+
+func (recorder *signalRecorder) group(_ int, sig syscall.Signal) {
+	recorder.groupSignals = append(recorder.groupSignals, sig)
 }
 
 func runTermIgnoringCommand(t *testing.T, streams Streams) int {
@@ -613,6 +799,34 @@ var runCommandForegroundTestCases = []runCommandForegroundTestCase{
 		wantCode:   signalExitCode(syscall.SIGKILL),
 		wantStdout: "",
 		wantStderr: "",
+	},
+}
+
+var classifyStartErrorTestCases = []classifyStartErrorTestCase{
+	{
+		name: "not found",
+		err:  exec.ErrNotFound,
+		want: ExitNotFound,
+	},
+	{
+		name: "path does not exist",
+		err:  os.ErrNotExist,
+		want: ExitNotFound,
+	},
+	{
+		name: "permission denied",
+		err:  os.ErrPermission,
+		want: ExitCannotInvoke,
+	},
+	{
+		name: "invalid executable format",
+		err:  syscall.ENOEXEC,
+		want: ExitCannotInvoke,
+	},
+	{
+		name: "other",
+		err:  errTestStartFailure,
+		want: ExitInternalFailure,
 	},
 }
 
