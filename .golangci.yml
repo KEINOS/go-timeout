@@ -1,0 +1,21 @@
+version: "2"
+run:
+  tests: true
+  allow-parallel-runners: true
+
+linters:
+  default: all
+  disable:
+    # Deprecated linters
+    - wsl
+    - gomodguard
+    # Disable due to the external dependency
+    - depguard
+  settings:
+    paralleltest:
+      ignore-missing: false
+    varnamelen:
+      ignore-names:
+        - ok
+        - t
+        - tt

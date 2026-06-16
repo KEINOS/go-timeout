@@ -1,0 +1,15 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+	{
+	  "label": "build timeout",
+	  "type": "shell",
+	  "command": "make build-cmd",
+	  "problemMatcher": [],
+	  "group": {
+		"kind": "build",
+		"isDefault": true
+	  }
+	}
+  ]
+}

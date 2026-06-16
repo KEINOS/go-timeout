@@ -1,0 +1,44 @@
+# Ignore everything by default.
+# Due to ignoring test artifacts and generated files.
+*
+*/
+
+# === Allow-List ===
+
+# Dot/config files.
+!.gitignore
+!.editorconfig
+!.golangci.yml
+!.markdownlint-cli2.yaml
+!.yamlfmt
+
+# Dev/config dirs.
+!.github/
+!.github/**
+!.vscode/
+!.vscode/**
+!Makefile
+!Dockerfile
+
+# Root docs.
+!README.md
+!CONTRIBUTING.md
+!LICENSE.md
+
+# Go module files.
+!go.mod
+!go.sum
+
+# Source/test trees.
+!timeout/
+!timeout/**
+!cmd/
+!cmd/**
+!test/
+!test/**
+!testdata/
+!testdata/**
+
+# Exclude generated benchmark fixtures but the directory itself.
+testdata/e2e-fixtures/**
+!testdata/e2e-fixtures/.gitkeep

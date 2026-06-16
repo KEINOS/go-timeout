@@ -1,0 +1,23 @@
+name: E2E Test
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+jobs:
+  e2e-test:
+    name: Build and run end-to-end tests on Ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run e2e tests
+        shell: bash
+        run: make test-e2e

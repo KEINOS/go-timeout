@@ -1,0 +1,48 @@
+name: Lint Check
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+jobs:
+  lint-check:
+    name: Lint/static analysis on Ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up and run markdownlint
+        uses: DavidAnson/markdownlint-cli2-action@v23
+        with:
+          globs: '**/*.md'
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          # Use 'latest' for the fail-fast policy
+          version: latest
+
+      - name: Set up checkmake
+        run: |
+          go install github.com/checkmake/checkmake/cmd/checkmake@latest
+          : # Smoke test checkmake
+          checkmake --version
+
+      - name: Set up yamlfmt
+        run: |
+          go install github.com/google/yamlfmt/cmd/yamlfmt@latest
+          : # Smoke test yamlfmt
+          yamlfmt --version
+
+      - name: Run lint/static analysis
+        shell: bash
+        run: |-
+          make lint-check
+          yamlfmt -lint .

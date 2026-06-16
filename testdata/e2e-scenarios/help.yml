@@ -1,0 +1,13 @@
+name: help
+timeout: 10s
+
+cases:
+  - name: show help
+    args: ["--help"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        contains: ["Hello"]
+      stderr:
+        equals: ""
