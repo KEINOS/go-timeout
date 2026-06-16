@@ -79,15 +79,15 @@ var supportedSignals = map[string]syscall.Signal{
 
 // Config contains parsed timeout options and operands.
 type Config struct {
+	Command        []string
+	Duration       time.Duration
+	KillAfter      time.Duration
+	Signal         syscall.Signal
 	Foreground     bool
 	PreserveStatus bool
 	Verbose        bool
 	ShowHelp       bool
 	ShowVersion    bool
-	Duration       time.Duration
-	KillAfter      time.Duration
-	Signal         syscall.Signal
-	Command        []string
 }
 
 // Streams contains standard streams used by Run.
@@ -103,14 +103,14 @@ type lockedWriter struct {
 }
 
 type runnerState struct {
-	config     Config
 	streams    Streams
+	suppressBy time.Time
+	config     Config
 	pgid       int
+	suppressed syscall.Signal
 	timedOut   bool
 	killSent   bool
 	signalSent bool
-	suppressed syscall.Signal
-	suppressBy time.Time
 }
 
 // Parse parses timeout command-line arguments.

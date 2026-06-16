@@ -298,27 +298,27 @@ type parseSignalTestCase struct {
 
 type runStaticOutputTestCase struct {
 	name       string
-	args       []string
-	wantCode   int
 	wantStdout string
 	wantStderr string
+	args       []string
+	wantCode   int
 }
 
 type versionFromBuildInfoTestCase struct {
-	name string
 	info *debug.BuildInfo
-	ok   bool
+	name string
 	want string
+	ok   bool
 }
 
 type runCommandForegroundTestCase struct {
-	name       string
-	args       []string
 	run        func(t *testing.T, streams Streams) int
+	name       string
 	stdin      string
-	wantCode   int
 	wantStdout string
 	wantStderr string
+	args       []string
+	wantCode   int
 }
 
 func runTermIgnoringCommand(t *testing.T, streams Streams) int {
