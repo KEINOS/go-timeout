@@ -100,7 +100,8 @@ type runnerState struct {
 
 // Parse parses timeout command-line arguments.
 func Parse(args []string) (Config, error) {
-	config := Config{Signal: syscall.SIGTERM}
+	config := new(Config)
+	config.Signal = syscall.SIGTERM
 
 	index := 0
 	for index < len(args) {
@@ -116,7 +117,7 @@ func Parse(args []string) (Config, error) {
 		}
 
 		if strings.HasPrefix(arg, "--") {
-			nextIndex, err := parseLongOption(&config, args, index)
+			nextIndex, err := parseLongOption(config, args, index)
 			if err != nil {
 				return Config{}, err
 			}
@@ -126,7 +127,7 @@ func Parse(args []string) (Config, error) {
 			continue
 		}
 
-		nextIndex, err := parseShortOptions(&config, args, index)
+		nextIndex, err := parseShortOptions(config, args, index)
 		if err != nil {
 			return Config{}, err
 		}
@@ -135,7 +136,7 @@ func Parse(args []string) (Config, error) {
 	}
 
 	if config.ShowHelp || config.ShowVersion {
-		return config, nil
+		return *config, nil
 	}
 
 	if index >= len(args) {
@@ -155,7 +156,7 @@ func Parse(args []string) (Config, error) {
 
 	config.Command = append([]string(nil), args[index+1:]...)
 
-	return config, nil
+	return *config, nil
 }
 
 // ParseDuration parses GNU timeout duration syntax.
@@ -264,10 +265,9 @@ func Run(args []string, streams Streams) int {
 		return ExitSuccess
 	}
 
-	state := runnerState{
-		config:  config,
-		streams: streams,
-	}
+	state := new(runnerState)
+	state.config = config
+	state.streams = streams
 
 	return state.runCommand()
 }

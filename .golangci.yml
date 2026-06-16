@@ -15,7 +15,6 @@ linters:
     - gochecknoglobals
     # Too noisy for CLI parser tables and tests in this project.
     - cyclop
-    - exhaustruct
     - goconst
     - mnd
   settings:

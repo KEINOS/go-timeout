@@ -14,53 +14,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type parseTestCase struct {
-	name string
-	args []string
-	want Config
-}
-
-type parseUsageErrorTestCase struct {
-	name string
-	args []string
-}
-
-type parseDurationTestCase struct {
-	name string
-	in   string
-	want time.Duration
-}
-
-type parseSignalTestCase struct {
-	name string
-	in   string
-	want syscall.Signal
-}
-
-type runStaticOutputTestCase struct {
-	name       string
-	args       []string
-	wantCode   int
-	wantStdout string
-	wantStderr string
-}
-
-type versionFromBuildInfoTestCase struct {
-	name string
-	info *debug.BuildInfo
-	ok   bool
-	want string
-}
-
-type runCommandForegroundTestCase struct {
-	name       string
-	args       []string
-	run        func(t *testing.T, streams Streams) int
-	stdin      string
-	wantCode   int
-	wantStdout string
-	wantStderr string
-}
+// ============================================================================
+//  Test Section
+// ============================================================================
 
 func TestParse(t *testing.T) {
 	t.Parallel()
@@ -227,6 +183,131 @@ func TestRunCommandForeground(t *testing.T) {
 	}
 }
 
+func TestTermIgnoringHelperProcess(t *testing.T) {
+	t.Parallel()
+
+	if os.Getenv("GO_TIMEOUT_HELPER_PROCESS") != "term-ignore" {
+		return
+	}
+
+	readyPath := os.Getenv("GO_TIMEOUT_HELPER_READY")
+	startPath := os.Getenv("GO_TIMEOUT_HELPER_START")
+
+	require.NotEmpty(t, readyPath)
+	require.NotEmpty(t, startPath)
+
+	signal.Ignore(syscall.SIGTERM)
+	//nolint:gosec // The parent test passes temp file paths to this helper process.
+	require.NoError(t, os.WriteFile(readyPath, nil, 0o600))
+
+	for {
+		//nolint:gosec // The parent test passes temp file paths to this helper process.
+		_, err := os.Stat(startPath)
+		if err == nil {
+			break
+		}
+
+		require.ErrorIs(t, err, os.ErrNotExist)
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	for {
+		time.Sleep(time.Hour)
+	}
+}
+
+func TestRunCommandCannotInvoke(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "not-executable")
+
+	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"), 0o600))
+
+	stderr := new(bytes.Buffer)
+	got := Run([]string{"--foreground", "0", path}, Streams{
+		Stdin:  nil,
+		Stdout: nil,
+		Stderr: stderr,
+	})
+
+	require.Equal(t, ExitCannotInvoke, got)
+	require.Contains(t, stderr.String(), "failed to run command")
+}
+
+func TestRunCommandRejectsInvalidExecutableFormat(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "invalid-executable")
+
+	require.NoError(t, os.WriteFile(path, []byte("not a native executable\n"), 0o600))
+	//nolint:gosec // executable bit is required to exercise ENOEXEC.
+	require.NoError(t, os.Chmod(path, 0o700))
+
+	stderr := new(bytes.Buffer)
+	got := Run([]string{"--foreground", "0", path}, Streams{
+		Stdin:  nil,
+		Stdout: nil,
+		Stderr: stderr,
+	})
+
+	require.Equal(t, ExitCannotInvoke, got)
+	require.Contains(t, stderr.String(), "failed to run command")
+}
+
+// ============================================================================
+//  Helpers Section
+// ============================================================================
+
+type parseTestCase struct {
+	name string
+	args []string
+	want Config
+}
+
+type parseUsageErrorTestCase struct {
+	name string
+	args []string
+}
+
+type parseDurationTestCase struct {
+	name string
+	in   string
+	want time.Duration
+}
+
+type parseSignalTestCase struct {
+	name string
+	in   string
+	want syscall.Signal
+}
+
+type runStaticOutputTestCase struct {
+	name       string
+	args       []string
+	wantCode   int
+	wantStdout string
+	wantStderr string
+}
+
+type versionFromBuildInfoTestCase struct {
+	name string
+	info *debug.BuildInfo
+	ok   bool
+	want string
+}
+
+type runCommandForegroundTestCase struct {
+	name       string
+	args       []string
+	run        func(t *testing.T, streams Streams) int
+	stdin      string
+	wantCode   int
+	wantStdout string
+	wantStderr string
+}
+
 func runTermIgnoringCommand(t *testing.T, streams Streams) int {
 	t.Helper()
 
@@ -284,85 +365,24 @@ func writerString(writer any) string {
 	return stringer.String()
 }
 
-func TestTermIgnoringHelperProcess(t *testing.T) {
-	t.Parallel()
-
-	if os.Getenv("GO_TIMEOUT_HELPER_PROCESS") != "term-ignore" {
-		return
-	}
-
-	readyPath := os.Getenv("GO_TIMEOUT_HELPER_READY")
-	startPath := os.Getenv("GO_TIMEOUT_HELPER_START")
-
-	require.NotEmpty(t, readyPath)
-	require.NotEmpty(t, startPath)
-
-	signal.Ignore(syscall.SIGTERM)
-	//nolint:gosec // The parent test passes temp file paths to this helper process.
-	require.NoError(t, os.WriteFile(readyPath, nil, 0o600))
-
-	for {
-		//nolint:gosec // The parent test passes temp file paths to this helper process.
-		_, err := os.Stat(startPath)
-		if err == nil {
-			break
-		}
-
-		require.ErrorIs(t, err, os.ErrNotExist)
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	for {
-		time.Sleep(time.Hour)
-	}
-}
-
-func TestRunCommandCannotInvoke(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "not-executable")
-
-	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"), 0o600))
-
-	stderr := new(bytes.Buffer)
-	got := Run([]string{"--foreground", "0", path}, Streams{
-		Stderr: stderr,
-	})
-
-	require.Equal(t, ExitCannotInvoke, got)
-	require.Contains(t, stderr.String(), "failed to run command")
-}
-
-func TestRunCommandRejectsInvalidExecutableFormat(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "invalid-executable")
-
-	require.NoError(t, os.WriteFile(path, []byte("not a native executable\n"), 0o600))
-	//nolint:gosec // executable bit is required to exercise ENOEXEC.
-	require.NoError(t, os.Chmod(path, 0o700))
-
-	stderr := new(bytes.Buffer)
-	got := Run([]string{"--foreground", "0", path}, Streams{
-		Stderr: stderr,
-	})
-
-	require.Equal(t, ExitCannotInvoke, got)
-	require.Contains(t, stderr.String(), "failed to run command")
-}
-
-/* Data Providers */
+// ============================================================================
+//  Data Providers Section
+// ============================================================================
 
 var parseTestCases = []parseTestCase{
 	{
 		name: "parses command",
 		args: []string{"1s", "printf", "ok"},
 		want: Config{
-			Duration: 1 * time.Second,
-			Signal:   syscall.SIGTERM,
-			Command:  []string{"printf", "ok"},
+			Foreground:     false,
+			PreserveStatus: false,
+			Verbose:        false,
+			ShowHelp:       false,
+			ShowVersion:    false,
+			Duration:       1 * time.Second,
+			KillAfter:      0,
+			Signal:         syscall.SIGTERM,
+			Command:        []string{"printf", "ok"},
 		},
 	},
 	{
@@ -372,6 +392,8 @@ var parseTestCases = []parseTestCase{
 			Foreground:     true,
 			PreserveStatus: true,
 			Verbose:        true,
+			ShowHelp:       false,
+			ShowVersion:    false,
 			Duration:       2 * time.Minute,
 			KillAfter:      500 * time.Millisecond,
 			Signal:         syscall.SIGHUP,
@@ -382,19 +404,30 @@ var parseTestCases = []parseTestCase{
 		name: "stops option parsing at duration",
 		args: []string{"0", "printf", "--help"},
 		want: Config{
-			Duration: 0,
-			Signal:   syscall.SIGTERM,
-			Command:  []string{"printf", "--help"},
+			Foreground:     false,
+			PreserveStatus: false,
+			Verbose:        false,
+			ShowHelp:       false,
+			ShowVersion:    false,
+			Duration:       0,
+			KillAfter:      0,
+			Signal:         syscall.SIGTERM,
+			Command:        []string{"printf", "--help"},
 		},
 	},
 	{
 		name: "parses long option values",
 		args: []string{"--kill-after=1s", "--signal=SIGUSR1", "3", "sleep", "4"},
 		want: Config{
-			Duration:  3 * time.Second,
-			KillAfter: 1 * time.Second,
-			Signal:    syscall.SIGUSR1,
-			Command:   []string{"sleep", "4"},
+			Foreground:     false,
+			PreserveStatus: false,
+			Verbose:        false,
+			ShowHelp:       false,
+			ShowVersion:    false,
+			Duration:       3 * time.Second,
+			KillAfter:      1 * time.Second,
+			Signal:         syscall.SIGUSR1,
+			Command:        []string{"sleep", "4"},
 		},
 	},
 }
@@ -456,21 +489,13 @@ var runStaticOutputTestCases = []runStaticOutputTestCase{
 var versionFromBuildInfoTestCases = []versionFromBuildInfoTestCase{
 	{
 		name: "uses module version",
-		info: &debug.BuildInfo{
-			Main: debug.Module{
-				Version: "v1.2.3",
-			},
-		},
+		info: newBuildInfo("v1.2.3"),
 		ok:   true,
 		want: "v1.2.3",
 	},
 	{
 		name: "falls back when version is empty",
-		info: &debug.BuildInfo{
-			Main: debug.Module{
-				Version: "",
-			},
-		},
+		info: newBuildInfo(""),
 		ok:   true,
 		want: defaultVersion,
 	},
@@ -486,43 +511,65 @@ var runCommandForegroundTestCases = []runCommandForegroundTestCase{
 	{
 		name:       "success",
 		args:       []string{"--foreground", "0", "printf", "ok"},
+		run:        nil,
+		stdin:      "",
 		wantCode:   ExitSuccess,
 		wantStdout: "ok",
+		wantStderr: "",
 	},
 	{
 		name:       "stdin passthrough",
 		args:       []string{"--foreground", "0", "cat"},
+		run:        nil,
 		stdin:      "input",
 		wantCode:   ExitSuccess,
 		wantStdout: "input",
+		wantStderr: "",
 	},
 	{
-		name:     "exit status",
-		args:     []string{"--foreground", "0", "sh", "-c", "exit 42"},
-		wantCode: 42,
+		name:       "exit status",
+		args:       []string{"--foreground", "0", "sh", "-c", "exit 42"},
+		run:        nil,
+		stdin:      "",
+		wantCode:   42,
+		wantStdout: "",
+		wantStderr: "",
 	},
 	{
 		name:       "stderr passthrough",
 		args:       []string{"--foreground", "0", "sh", "-c", "printf err >&2"},
+		run:        nil,
+		stdin:      "",
 		wantCode:   ExitSuccess,
+		wantStdout: "",
 		wantStderr: "err",
 	},
 	{
 		name:       "not found",
 		args:       []string{"--foreground", "0", "go-timeout-command-not-found"},
+		run:        nil,
+		stdin:      "",
 		wantCode:   ExitNotFound,
+		wantStdout: "",
 		wantStderr: "failed to run command",
 	},
 	{
 		name:       "absolute path not found",
 		args:       []string{"--foreground", "0", "/tmp/go-timeout-command-not-found"},
+		run:        nil,
+		stdin:      "",
 		wantCode:   ExitNotFound,
+		wantStdout: "",
 		wantStderr: "failed to run command",
 	},
 	{
-		name:     "timeout",
-		args:     []string{"--foreground", "0.01s", "sleep", "1"},
-		wantCode: ExitTimedOut,
+		name:       "timeout",
+		args:       []string{"--foreground", "0.01s", "sleep", "1"},
+		run:        nil,
+		stdin:      "",
+		wantCode:   ExitTimedOut,
+		wantStdout: "",
+		wantStderr: "",
 	},
 	{
 		name: "preserve status",
@@ -530,17 +577,44 @@ var runCommandForegroundTestCases = []runCommandForegroundTestCase{
 			"--foreground", "--preserve-status", "0.01s",
 			"sh", "-c", "trap 'exit 42' TERM; while true; do :; done",
 		},
-		wantCode: 42,
+		run:        nil,
+		stdin:      "",
+		wantCode:   42,
+		wantStdout: "",
+		wantStderr: "",
 	},
 	{
 		name:       "verbose signal",
 		args:       []string{"--foreground", "--verbose", "0.01s", "sleep", "1"},
+		run:        nil,
+		stdin:      "",
 		wantCode:   ExitTimedOut,
+		wantStdout: "",
 		wantStderr: "sending signal TERM",
 	},
 	{
-		name:     "kill after",
-		run:      runTermIgnoringCommand,
-		wantCode: signalExitCode(syscall.SIGKILL),
+		name:       "kill after",
+		args:       nil,
+		run:        runTermIgnoringCommand,
+		stdin:      "",
+		wantCode:   signalExitCode(syscall.SIGKILL),
+		wantStdout: "",
+		wantStderr: "",
 	},
+}
+
+func newBuildInfo(version string) *debug.BuildInfo {
+	info := new(debug.BuildInfo)
+	info.GoVersion = ""
+	info.Path = ""
+	info.Main = debug.Module{
+		Path:    "",
+		Version: version,
+		Sum:     "",
+		Replace: nil,
+	}
+	info.Deps = nil
+	info.Settings = nil
+
+	return info
 }

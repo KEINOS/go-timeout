@@ -26,6 +26,7 @@ func ExampleRun_help() {
 	stderr := new(bytes.Buffer)
 
 	code := timeout.Run([]string{"--help"}, timeout.Streams{
+		Stdin:  bytes.NewReader(nil),
 		Stdout: stdout,
 		Stderr: stderr,
 	})
