@@ -16,7 +16,6 @@ linters:
     # Too noisy for CLI parser tables and tests in this project.
     - cyclop
     - exhaustruct
-    - funlen
     - goconst
     - mnd
   settings:
