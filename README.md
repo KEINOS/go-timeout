@@ -49,6 +49,28 @@ The local binary is written to:
 dist/timeout
 ```
 
+## Platform Support
+
+### Linux and macOS
+
+Full support for all features, including process-group signaling and all POSIX
+signals.
+
+### Windows (best-effort)
+
+Supported on Windows with the following limitations:
+
+- **Process groups**: Windows lacks POSIX process groups. The timeout command
+  only signals the direct process; descendants spawned by the command are not
+  tracked or terminated.
+- **Signals**: Only process termination is delivered. All requested signals
+  (e.g., `SIGTERM`, `SIGHUP`, `SIGCONT`) are mapped to forced termination
+  (`SIGKILL`). POSIX job-control signals (`SIGCONT`, `SIGSTOP`, etc.) are
+  rejected at parse time.
+
+These are documented platform boundaries, not bugs. Process-group-based termination
+and signal delivery on Windows may improve in future releases.
+
 ## Usage as a Library
 
 The implementation lives in the `timeout` package and can be used from Go code.

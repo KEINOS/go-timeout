@@ -35,12 +35,11 @@ const (
 )
 
 const (
-	defaultVersion            = "(devel)"
-	hoursPerDay               = 24
-	maxDuration               = time.Duration(math.MaxInt64)
-	optionArgumentStep        = 2
-	signalExitCodeBase        = 128
-	signalSuppressionDuration = 200 * time.Millisecond
+	defaultVersion     = "(devel)"
+	hoursPerDay        = 24
+	maxDuration        = time.Duration(math.MaxInt64)
+	optionArgumentStep = 2
+	signalExitCodeBase = 128
 )
 
 const (
@@ -58,8 +57,6 @@ var ErrUsage = errors.New("usage error")
 
 // Test seams for external package calls that are hard to exercise directly.
 var debugReadBuildInfo = debug.ReadBuildInfo
-var syscallGetpgid = syscall.Getpgid
-var syscallSetpgid = syscall.Setpgid
 
 // exitErrorWaitStatus decodes the platform wait status from an exit error.
 // It is a test seam: on unix Sys() is always a syscall.WaitStatus, so the
@@ -68,25 +65,6 @@ var exitErrorWaitStatus = func(exitErr *exec.ExitError) (syscall.WaitStatus, boo
 	status, ok := exitErr.Sys().(syscall.WaitStatus)
 
 	return status, ok
-}
-
-var supportedSignals = map[string]syscall.Signal{
-	"ABRT": syscall.SIGABRT,
-	"ALRM": syscall.SIGALRM,
-	"CONT": syscall.SIGCONT,
-	"HUP":  syscall.SIGHUP,
-	"ILL":  syscall.SIGILL,
-	"INT":  syscall.SIGINT,
-	"KILL": syscall.SIGKILL,
-	"PIPE": syscall.SIGPIPE,
-	"QUIT": syscall.SIGQUIT,
-	"STOP": syscall.SIGSTOP,
-	"TERM": syscall.SIGTERM,
-	"TSTP": syscall.SIGTSTP,
-	"TTIN": syscall.SIGTTIN,
-	"TTOU": syscall.SIGTTOU,
-	"USR1": syscall.SIGUSR1,
-	"USR2": syscall.SIGUSR2,
 }
 
 // Config contains parsed timeout options and operands.
@@ -114,21 +92,22 @@ type lockedWriter struct {
 	writer io.Writer
 }
 
-type groupSignalFunc func(int, syscall.Signal)
-
 type processSignalFunc func(*exec.Cmd, syscall.Signal)
 
+// runnerState holds the per-run monitor state. The embedded platformState
+// carries the platform's signal-delivery seams: every platform injects a
+// process signaler, and Unix additionally injects a process-group signaler.
 type runnerState struct {
-	streams       Streams
-	suppressBy    time.Time
-	signalGroup   groupSignalFunc
-	signalProcess processSignalFunc
-	config        Config
-	pgid          int
-	suppressed    syscall.Signal
-	timedOut      bool
-	killSent      bool
-	signalSent    bool
+	platformState
+
+	streams    Streams
+	suppressBy time.Time
+	config     Config
+	pgid       int
+	suppressed syscall.Signal
+	timedOut   bool
+	killSent   bool
+	signalSent bool
 }
 
 // Parse parses timeout command-line arguments.
@@ -307,22 +286,8 @@ Options:
 // In background mode, timeout and the child share one process group.
 // This lets timeout send signals to the whole command.
 func (state *runnerState) runCommand() int {
-	if !state.config.Foreground {
-		err := syscallSetpgid(0, 0)
-		if err != nil && !errors.Is(err, syscall.EPERM) {
-			_, _ = fmt.Fprintf(state.streams.Stderr, "timeout: set process group: %v\n", err)
-
-			return ExitInternalFailure
-		}
-
-		pgid, err := syscallGetpgid(0)
-		if err != nil {
-			_, _ = fmt.Fprintf(state.streams.Stderr, "timeout: get process group: %v\n", err)
-
-			return ExitInternalFailure
-		}
-
-		state.pgid = pgid
+	if code, ok := state.setupProcessGroup(); !ok {
+		return code
 	}
 
 	//nolint:gosec // Running the requested command is the purpose of this package.
@@ -381,24 +346,7 @@ func (state *runnerState) sendSignal(cmd *exec.Cmd, sig syscall.Signal) {
 			signalName(sig), state.config.Command[0])
 	}
 
-	if state.config.Foreground {
-		state.sendProcessSignal(cmd, sig)
-
-		return
-	}
-
-	// GNU timeout sends the signal both to the monitored process and to the
-	// shared process group. The direct signal covers edge cases where the command
-	// has changed process groups; SIGCONT below follows the same policy.
-	state.sendProcessSignal(cmd, sig)
-	state.sendGroupSignal(sig)
-	state.suppressed = sig
-	state.suppressBy = time.Now().Add(signalSuppressionDuration)
-
-	if shouldResumeAfterSignal(sig) {
-		state.sendProcessSignal(cmd, syscall.SIGCONT)
-		state.sendGroupSignal(syscall.SIGCONT)
-	}
+	state.deliverSignal(cmd, sig)
 }
 
 func (state *runnerState) sendProcessSignal(cmd *exec.Cmd, sig syscall.Signal) {
@@ -408,15 +356,6 @@ func (state *runnerState) sendProcessSignal(cmd *exec.Cmd, sig syscall.Signal) {
 	}
 
 	signalProcess(cmd, sig)
-}
-
-func (state *runnerState) sendGroupSignal(sig syscall.Signal) {
-	signalGroup := state.signalGroup
-	if signalGroup == nil {
-		signalGroup = defaultGroupSignal
-	}
-
-	signalGroup(state.pgid, sig)
 }
 
 func (state *runnerState) startErrorExitCode(err error) int {
@@ -573,12 +512,6 @@ func parseDurationNumber(number string) (float64, error) {
 	}
 
 	return parsed, nil
-}
-
-func defaultGroupSignal(pgid int, sig syscall.Signal) {
-	// GNU timeout treats signal delivery as best effort; the command may have
-	// already exited or changed process groups by the time the signal is sent.
-	_ = syscall.Kill(-pgid, sig)
 }
 
 func defaultProcessSignal(cmd *exec.Cmd, sig syscall.Signal) {
@@ -853,10 +786,6 @@ func signalName(sig syscall.Signal) string {
 	}
 
 	return sig.String()
-}
-
-func shouldResumeAfterSignal(sig syscall.Signal) bool {
-	return sig != syscall.SIGKILL && sig != syscall.SIGCONT
 }
 
 func stopTimer(timer *time.Timer) {
