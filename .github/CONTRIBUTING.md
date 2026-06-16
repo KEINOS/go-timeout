@@ -17,9 +17,12 @@ tests, and a YAML-driven end-to-end harness.
 
 | Path | Purpose |
 | ---- | ------- |
-| `timeout/timeout.go` | Core library: parsing, signal handling, runner |
-| `timeout/timeout_unit_test.go` | Unit tests for parsing and run behavior |
-| `timeout/timeout_example_test.go` | Go example tests for public usage |
+| `timeout/timeout.go` | Core library: parsing, signal handling, runner (portable) |
+| `timeout/timeout_unix.go` | Unix-only process-group and signal behavior (`//go:build unix`) |
+| `timeout/timeout_windows.go` | Windows best-effort behavior (`//go:build windows`) |
+| `timeout/timeout_unix_unit_test.go` | Unix unit tests for parsing and run behavior (`//go:build unix`) |
+| `timeout/timeout_windows_unit_test.go` | Windows unit tests (`//go:build windows`) |
+| `timeout/timeout_example_test.go` | Go example tests for public usage (portable) |
 | `cmd/timeout/main.go` | CLI entry point over `timeout.Run` |
 | `cmd/timeout/main_unit_test.go` | Tests for `main`, `run`, and `osExit` override |
 | `test/e2e/timeout_test.go` | YAML scenario-driven E2E harness |
@@ -54,6 +57,12 @@ unit tests.
 
 ## Platform Scope
 
-The initial compatibility target is GNU-compatible Unix behavior. Linux is the
-primary reference for process groups, signals, and exit statuses. macOS support
-is desirable. Windows support is not part of the initial target.
+The primary compatibility target is GNU-compatible Unix behavior. Linux is the
+reference for process groups, signals, and exit statuses; macOS is also fully
+supported.
+
+Windows is supported on a best-effort basis. Platform-specific code is isolated
+behind `//go:build unix` and `//go:build windows` files so the GNU-compatible
+Unix behavior is never weakened. Windows has documented limitations (no POSIX
+process groups or signals, so the command is force-terminated and job-control
+signal names are rejected); see the Platform Support section of `README.md`.

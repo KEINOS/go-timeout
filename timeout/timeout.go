@@ -59,8 +59,9 @@ var ErrUsage = errors.New("usage error")
 var debugReadBuildInfo = debug.ReadBuildInfo
 
 // exitErrorWaitStatus decodes the platform wait status from an exit error.
-// It is a test seam: on unix Sys() is always a syscall.WaitStatus, so the
-// non-WaitStatus fallback in waitExitCode is otherwise unreachable.
+// It is a test seam: on the supported platforms Sys() is always a
+// syscall.WaitStatus, so the non-WaitStatus fallback in waitExitCode is
+// otherwise unreachable.
 var exitErrorWaitStatus = func(exitErr *exec.ExitError) (syscall.WaitStatus, bool) {
 	status, ok := exitErr.Sys().(syscall.WaitStatus)
 
@@ -282,9 +283,9 @@ Options:
 `
 }
 
-// runCommand starts the user command as a child process.
-// In background mode, timeout and the child share one process group.
-// This lets timeout send signals to the whole command.
+// runCommand starts the user command as a child process. Platform-specific
+// setup (such as the Unix background process group that lets timeout signal the
+// whole command) is handled by setupProcessGroup.
 func (state *runnerState) runCommand() int {
 	if code, ok := state.setupProcessGroup(); !ok {
 		return code
