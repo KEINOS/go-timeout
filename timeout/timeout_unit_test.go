@@ -29,6 +29,11 @@ const (
 
 	durationFastTimeout = "0.01s"
 	pgidTest            = 424242
+
+	// waitForCommandTimeout fails the self-signal test fast on a slow CI host
+	// instead of hanging until the global go test timeout. It is generous
+	// relative to the millisecond-scale signal delivery the test exercises.
+	waitForCommandTimeout = 5 * time.Second
 )
 
 // ============================================================================
@@ -574,6 +579,102 @@ func TestStopTimerAllowsNil(t *testing.T) {
 	})
 }
 
+//nolint:paralleltest // no parallel: installs process-wide signal handlers and self-signals
+func TestWaitForCommandForwardsReceivedSignal(t *testing.T) {
+	// Pre-register our own handler for SIGUSR1 before anything else so the
+	// default (fatal) disposition is suppressed for the whole test, even in
+	// the window before waitForCommand installs its own notifier.
+	selfCh := make(chan os.Signal, 1)
+	signal.Notify(selfCh, syscall.SIGUSR1)
+
+	defer signal.Stop(selfCh)
+
+	cmd := exec.CommandContext(t.Context(), commandSleep, "30")
+	require.NoError(t, cmd.Start())
+
+	forwarded := make(chan syscall.Signal, 1)
+
+	state := new(runnerState)
+	state.config = Config{
+		Foreground:     true,
+		PreserveStatus: false,
+		Verbose:        false,
+		ShowHelp:       false,
+		ShowVersion:    false,
+		Duration:       0,
+		KillAfter:      0,
+		Signal:         syscall.SIGUSR1,
+		Command:        []string{commandSleep},
+	}
+	state.streams = fillDefaultStreams(Streams{
+		Stdin:  bytes.NewReader(nil),
+		Stdout: io.Discard,
+		Stderr: io.Discard,
+	})
+	// Record the forwarded signal, then deliver it to the real child so the
+	// child exits and waitForCommand's done branch ends the loop.
+	state.signalProcess = func(child *exec.Cmd, sig syscall.Signal) {
+		select {
+		case forwarded <- sig:
+		default:
+		}
+
+		_ = child.Process.Signal(sig)
+	}
+
+	// Repeatedly signal our own process until waitForCommand has installed its
+	// notifier and forwarded the signal into the select loop.
+	stopSending := make(chan struct{})
+
+	go signalSelfUntil(stopSending)
+
+	code := runWaitForCommandGuarded(t, state, cmd)
+
+	close(stopSending)
+
+	require.True(t, state.signalSent, "signal should have been forwarded to the child")
+	require.Equal(t, syscall.SIGUSR1, <-forwarded)
+	require.Equal(t, signalExitCode(syscall.SIGUSR1), code)
+}
+
+//nolint:paralleltest // no parallel: overrides the exitErrorWaitStatus package seam
+func TestWaitExitCodeFallsBackWhenSysNotWaitStatus(t *testing.T) {
+	original := exitErrorWaitStatus
+	exitErrorWaitStatus = func(*exec.ExitError) (syscall.WaitStatus, bool) {
+		return 0, false
+	}
+
+	defer func() { exitErrorWaitStatus = original }()
+
+	cmd := exec.CommandContext(t.Context(), "sh", "-c", "exit 7")
+	err := cmd.Run()
+
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, err, &exitErr)
+
+	state := new(runnerState)
+	state.streams = fillDefaultStreams(Streams{
+		Stdin:  bytes.NewReader(nil),
+		Stdout: io.Discard,
+		Stderr: io.Discard,
+	})
+
+	require.Equal(t, 7, state.waitExitCode(err))
+}
+
+func TestNewStoppedTimerDoesNotFire(t *testing.T) {
+	t.Parallel()
+
+	timer := newStoppedTimer()
+	defer stopTimer(timer)
+
+	select {
+	case <-timer.C:
+		require.Fail(t, "stopped timer should not fire")
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
 // ============================================================================
 //  Helpers Section
 // ============================================================================
@@ -715,6 +816,47 @@ func runTermIgnoringCommand(t *testing.T, streams Streams) int {
 			require.ErrorIs(t, err, os.ErrNotExist)
 			time.Sleep(10 * time.Millisecond)
 		}
+	}
+}
+
+// runWaitForCommandGuarded runs the blocking waitForCommand loop under a
+// deadline so a missed signal delivery on a slow CI host fails fast instead of
+// hanging until the global test timeout. On timeout it kills the child so the
+// done branch unblocks and neither the goroutine nor the child leaks.
+func runWaitForCommandGuarded(t *testing.T, state *runnerState, cmd *exec.Cmd) int {
+	t.Helper()
+
+	result := make(chan int, 1)
+
+	go func() {
+		result <- state.waitForCommand(cmd)
+	}()
+
+	select {
+	case code := <-result:
+		return code
+	case <-time.After(waitForCommandTimeout):
+		_ = cmd.Process.Kill()
+
+		<-result
+
+		require.FailNow(t, "waitForCommand did not observe the forwarded signal in time")
+
+		return 0
+	}
+}
+
+func signalSelfUntil(stop <-chan struct{}) {
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+
+		_ = syscall.Kill(syscall.Getpid(), syscall.SIGUSR1)
+
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

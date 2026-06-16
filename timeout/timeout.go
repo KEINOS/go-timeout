@@ -61,6 +61,15 @@ var debugReadBuildInfo = debug.ReadBuildInfo
 var syscallGetpgid = syscall.Getpgid
 var syscallSetpgid = syscall.Setpgid
 
+// exitErrorWaitStatus decodes the platform wait status from an exit error.
+// It is a test seam: on unix Sys() is always a syscall.WaitStatus, so the
+// non-WaitStatus fallback in waitExitCode is otherwise unreachable.
+var exitErrorWaitStatus = func(exitErr *exec.ExitError) (syscall.WaitStatus, bool) {
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+
+	return status, ok
+}
+
 var supportedSignals = map[string]syscall.Signal{
 	"ABRT": syscall.SIGABRT,
 	"ALRM": syscall.SIGALRM,
@@ -477,7 +486,7 @@ func (state *runnerState) waitExitCode(err error) int {
 		return ExitInternalFailure
 	}
 
-	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	status, ok := exitErrorWaitStatus(exitErr)
 	if !ok {
 		return exitErr.ExitCode()
 	}
@@ -599,10 +608,11 @@ func isSupportedSignal(sig syscall.Signal) bool {
 }
 
 func newStoppedTimer() *time.Timer {
+	// The timer is created far enough in the future that it cannot fire before
+	// Stop, so Stop always succeeds. Under Go 1.23+ timer semantics Stop also
+	// guarantees the channel is drained, so no explicit receive is needed.
 	timer := time.NewTimer(time.Hour)
-	if !timer.Stop() {
-		<-timer.C
-	}
+	timer.Stop()
 
 	return timer
 }
