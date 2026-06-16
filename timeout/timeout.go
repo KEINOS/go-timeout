@@ -288,6 +288,9 @@ Options:
 `
 }
 
+// runCommand starts the user command as a child process.
+// In background mode, timeout and the child share one process group.
+// This lets timeout send signals to the whole command.
 func (state *runnerState) runCommand() int {
 	if !state.config.Foreground {
 		err := syscall.Setpgid(0, 0)

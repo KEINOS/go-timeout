@@ -196,12 +196,13 @@ func TestTermIgnoringHelperProcess(t *testing.T) {
 	require.NotEmpty(t, readyPath)
 	require.NotEmpty(t, startPath)
 
+	readyPath = filepath.Clean(readyPath)
+	startPath = filepath.Clean(startPath)
+
 	signal.Ignore(syscall.SIGTERM)
-	//nolint:gosec // The parent test passes temp file paths to this helper process.
 	require.NoError(t, os.WriteFile(readyPath, nil, 0o600))
 
 	for {
-		//nolint:gosec // The parent test passes temp file paths to this helper process.
 		_, err := os.Stat(startPath)
 		if err == nil {
 			break
