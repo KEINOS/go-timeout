@@ -32,11 +32,22 @@ const (
 	ExitCannotInvoke = 126
 	// ExitNotFound is the exit code used when a command cannot be found.
 	ExitNotFound = 127
-
-	defaultVersion = "(devel)"
 )
 
-const maxDuration = time.Duration(math.MaxInt64)
+const (
+	defaultVersion = "(devel)"
+	maxDuration    = time.Duration(math.MaxInt64)
+)
+
+const (
+	optionForeground     = "--foreground"
+	optionPreserveStatus = "--preserve-status"
+	optionVerbose        = "--verbose"
+	optionHelp           = "--help"
+	optionVersion        = "--version"
+	optionKillAfter      = "--kill-after"
+	optionSignal         = "--signal"
+)
 
 // ErrUsage marks command-line usage errors.
 var ErrUsage = errors.New("usage error")
@@ -575,44 +586,44 @@ func parseLongOption(config *Config, args []string, index int) (int, error) {
 	arg := args[index]
 
 	switch {
-	case arg == "--foreground":
+	case arg == optionForeground:
 		config.Foreground = true
 
 		return index + 1, nil
-	case arg == "--preserve-status":
+	case arg == optionPreserveStatus:
 		config.PreserveStatus = true
 
 		return index + 1, nil
-	case arg == "--verbose":
+	case arg == optionVerbose:
 		config.Verbose = true
 
 		return index + 1, nil
-	case arg == "--help":
+	case arg == optionHelp:
 		config.ShowHelp = true
 
 		return index + 1, nil
-	case arg == "--version":
+	case arg == optionVersion:
 		config.ShowVersion = true
 
 		return index + 1, nil
-	case arg == "--kill-after":
-		value, nextIndex, err := requireOptionArgument(args, index, "--kill-after")
+	case arg == optionKillAfter:
+		value, nextIndex, err := requireOptionArgument(args, index, optionKillAfter)
 		if err != nil {
 			return 0, err
 		}
 
 		return nextIndex, parseKillAfter(config, value)
-	case strings.HasPrefix(arg, "--kill-after="):
-		return index + 1, parseKillAfter(config, strings.TrimPrefix(arg, "--kill-after="))
-	case arg == "--signal":
-		value, nextIndex, err := requireOptionArgument(args, index, "--signal")
+	case strings.HasPrefix(arg, optionKillAfter+"="):
+		return index + 1, parseKillAfter(config, strings.TrimPrefix(arg, optionKillAfter+"="))
+	case arg == optionSignal:
+		value, nextIndex, err := requireOptionArgument(args, index, optionSignal)
 		if err != nil {
 			return 0, err
 		}
 
 		return nextIndex, parseSignalOption(config, value)
-	case strings.HasPrefix(arg, "--signal="):
-		return index + 1, parseSignalOption(config, strings.TrimPrefix(arg, "--signal="))
+	case strings.HasPrefix(arg, optionSignal+"="):
+		return index + 1, parseSignalOption(config, strings.TrimPrefix(arg, optionSignal+"="))
 	default:
 		return 0, usageError("unrecognized option " + arg)
 	}

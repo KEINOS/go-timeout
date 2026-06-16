@@ -15,6 +15,18 @@ import (
 )
 
 // ============================================================================
+//  Constants Section
+// ============================================================================
+
+const (
+	commandPrintf = "printf"
+	commandSleep  = "sleep"
+	commandTrue   = "true"
+
+	durationFastTimeout = "0.01s"
+)
+
+// ============================================================================
 //  Test Section
 // ============================================================================
 
@@ -226,7 +238,7 @@ func TestRunCommandCannotInvoke(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"), 0o600))
 
 	stderr := new(bytes.Buffer)
-	got := Run([]string{"--foreground", "0", path}, Streams{
+	got := Run([]string{optionForeground, "0", path}, Streams{
 		Stdin:  nil,
 		Stdout: nil,
 		Stderr: stderr,
@@ -247,7 +259,7 @@ func TestRunCommandRejectsInvalidExecutableFormat(t *testing.T) {
 	require.NoError(t, os.Chmod(path, 0o700))
 
 	stderr := new(bytes.Buffer)
-	got := Run([]string{"--foreground", "0", path}, Streams{
+	got := Run([]string{optionForeground, "0", path}, Streams{
 		Stdin:  nil,
 		Stdout: nil,
 		Stderr: stderr,
@@ -317,7 +329,7 @@ func runTermIgnoringCommand(t *testing.T, streams Streams) int {
 	startPath := filepath.Join(dir, "start")
 
 	args := []string{
-		"--foreground", "--kill-after=0.1s", "0.5s",
+		optionForeground, optionKillAfter + "=0.1s", "0.5s",
 		"env", "GO_TIMEOUT_HELPER_PROCESS=term-ignore",
 		"GO_TIMEOUT_HELPER_READY=" + readyPath,
 		"GO_TIMEOUT_HELPER_START=" + startPath,
@@ -373,7 +385,7 @@ func writerString(writer any) string {
 var parseTestCases = []parseTestCase{
 	{
 		name: "parses command",
-		args: []string{"1s", "printf", "ok"},
+		args: []string{"1s", commandPrintf, "ok"},
 		want: Config{
 			Foreground:     false,
 			PreserveStatus: false,
@@ -383,12 +395,12 @@ var parseTestCases = []parseTestCase{
 			Duration:       1 * time.Second,
 			KillAfter:      0,
 			Signal:         syscall.SIGTERM,
-			Command:        []string{"printf", "ok"},
+			Command:        []string{commandPrintf, "ok"},
 		},
 	},
 	{
 		name: "parses options before duration",
-		args: []string{"-fpv", "-k", "0.5s", "-s", "HUP", "2m", "sleep", "9"},
+		args: []string{"-fpv", "-k", "0.5s", "-s", "HUP", "2m", commandSleep, "9"},
 		want: Config{
 			Foreground:     true,
 			PreserveStatus: true,
@@ -398,12 +410,12 @@ var parseTestCases = []parseTestCase{
 			Duration:       2 * time.Minute,
 			KillAfter:      500 * time.Millisecond,
 			Signal:         syscall.SIGHUP,
-			Command:        []string{"sleep", "9"},
+			Command:        []string{commandSleep, "9"},
 		},
 	},
 	{
 		name: "stops option parsing at duration",
-		args: []string{"0", "printf", "--help"},
+		args: []string{"0", commandPrintf, optionHelp},
 		want: Config{
 			Foreground:     false,
 			PreserveStatus: false,
@@ -413,12 +425,12 @@ var parseTestCases = []parseTestCase{
 			Duration:       0,
 			KillAfter:      0,
 			Signal:         syscall.SIGTERM,
-			Command:        []string{"printf", "--help"},
+			Command:        []string{commandPrintf, optionHelp},
 		},
 	},
 	{
 		name: "parses long option values",
-		args: []string{"--kill-after=1s", "--signal=SIGUSR1", "3", "sleep", "4"},
+		args: []string{optionKillAfter + "=1s", optionSignal + "=SIGUSR1", "3", commandSleep, "4"},
 		want: Config{
 			Foreground:     false,
 			PreserveStatus: false,
@@ -428,7 +440,7 @@ var parseTestCases = []parseTestCase{
 			Duration:       3 * time.Second,
 			KillAfter:      1 * time.Second,
 			Signal:         syscall.SIGUSR1,
-			Command:        []string{"sleep", "4"},
+			Command:        []string{commandSleep, "4"},
 		},
 	},
 }
@@ -437,11 +449,11 @@ var parseUsageErrorTestCases = []parseUsageErrorTestCase{
 	{name: "missing duration", args: nil},
 	{name: "missing command", args: []string{"1s"}},
 	{name: "unknown option", args: []string{"--bogus"}},
-	{name: "missing signal argument", args: []string{"--signal"}},
+	{name: "missing signal argument", args: []string{optionSignal}},
 	{name: "missing kill after argument", args: []string{"-k"}},
-	{name: "invalid duration", args: []string{"bad", "true"}},
-	{name: "invalid kill after", args: []string{"--kill-after=bad", "1s", "true"}},
-	{name: "invalid signal", args: []string{"--signal=NOPE", "1s", "true"}},
+	{name: "invalid duration", args: []string{"bad", commandTrue}},
+	{name: "invalid kill after", args: []string{optionKillAfter + "=bad", "1s", commandTrue}},
+	{name: "invalid signal", args: []string{optionSignal + "=NOPE", "1s", commandTrue}},
 }
 
 var parseDurationTestCases = []parseDurationTestCase{
@@ -466,14 +478,14 @@ var parseSignalTestCases = []parseSignalTestCase{
 var runStaticOutputTestCases = []runStaticOutputTestCase{
 	{
 		name:       "help",
-		args:       []string{"--help"},
+		args:       []string{optionHelp},
 		wantCode:   ExitSuccess,
 		wantStdout: "Usage:",
 		wantStderr: "",
 	},
 	{
 		name:       "version",
-		args:       []string{"--version"},
+		args:       []string{optionVersion},
 		wantCode:   ExitSuccess,
 		wantStdout: "timeout",
 		wantStderr: "",
@@ -511,7 +523,7 @@ var versionFromBuildInfoTestCases = []versionFromBuildInfoTestCase{
 var runCommandForegroundTestCases = []runCommandForegroundTestCase{
 	{
 		name:       "success",
-		args:       []string{"--foreground", "0", "printf", "ok"},
+		args:       []string{optionForeground, "0", commandPrintf, "ok"},
 		run:        nil,
 		stdin:      "",
 		wantCode:   ExitSuccess,
@@ -520,7 +532,7 @@ var runCommandForegroundTestCases = []runCommandForegroundTestCase{
 	},
 	{
 		name:       "stdin passthrough",
-		args:       []string{"--foreground", "0", "cat"},
+		args:       []string{optionForeground, "0", "cat"},
 		run:        nil,
 		stdin:      "input",
 		wantCode:   ExitSuccess,
@@ -529,7 +541,7 @@ var runCommandForegroundTestCases = []runCommandForegroundTestCase{
 	},
 	{
 		name:       "exit status",
-		args:       []string{"--foreground", "0", "sh", "-c", "exit 42"},
+		args:       []string{optionForeground, "0", "sh", "-c", "exit 42"},
 		run:        nil,
 		stdin:      "",
 		wantCode:   42,
@@ -538,7 +550,7 @@ var runCommandForegroundTestCases = []runCommandForegroundTestCase{
 	},
 	{
 		name:       "stderr passthrough",
-		args:       []string{"--foreground", "0", "sh", "-c", "printf err >&2"},
+		args:       []string{optionForeground, "0", "sh", "-c", "printf err >&2"},
 		run:        nil,
 		stdin:      "",
 		wantCode:   ExitSuccess,
@@ -547,7 +559,7 @@ var runCommandForegroundTestCases = []runCommandForegroundTestCase{
 	},
 	{
 		name:       "not found",
-		args:       []string{"--foreground", "0", "go-timeout-command-not-found"},
+		args:       []string{optionForeground, "0", "go-timeout-command-not-found"},
 		run:        nil,
 		stdin:      "",
 		wantCode:   ExitNotFound,
@@ -556,7 +568,7 @@ var runCommandForegroundTestCases = []runCommandForegroundTestCase{
 	},
 	{
 		name:       "absolute path not found",
-		args:       []string{"--foreground", "0", "/tmp/go-timeout-command-not-found"},
+		args:       []string{optionForeground, "0", "/tmp/go-timeout-command-not-found"},
 		run:        nil,
 		stdin:      "",
 		wantCode:   ExitNotFound,
@@ -565,7 +577,7 @@ var runCommandForegroundTestCases = []runCommandForegroundTestCase{
 	},
 	{
 		name:       "timeout",
-		args:       []string{"--foreground", "0.01s", "sleep", "1"},
+		args:       []string{optionForeground, durationFastTimeout, commandSleep, "1"},
 		run:        nil,
 		stdin:      "",
 		wantCode:   ExitTimedOut,
@@ -575,7 +587,7 @@ var runCommandForegroundTestCases = []runCommandForegroundTestCase{
 	{
 		name: "preserve status",
 		args: []string{
-			"--foreground", "--preserve-status", "0.01s",
+			optionForeground, optionPreserveStatus, durationFastTimeout,
 			"sh", "-c", "trap 'exit 42' TERM; while true; do :; done",
 		},
 		run:        nil,
@@ -586,7 +598,7 @@ var runCommandForegroundTestCases = []runCommandForegroundTestCase{
 	},
 	{
 		name:       "verbose signal",
-		args:       []string{"--foreground", "--verbose", "0.01s", "sleep", "1"},
+		args:       []string{optionForeground, optionVerbose, durationFastTimeout, commandSleep, "1"},
 		run:        nil,
 		stdin:      "",
 		wantCode:   ExitTimedOut,
