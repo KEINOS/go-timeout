@@ -13,8 +13,6 @@ linters:
     - depguard
     - testpackage
     - gochecknoglobals
-    # Too noisy for CLI parser tables and tests in this project.
-    - cyclop
   settings:
     paralleltest:
       ignore-missing: false

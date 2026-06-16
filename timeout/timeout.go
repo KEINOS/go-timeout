@@ -118,39 +118,12 @@ func Parse(args []string) (Config, error) {
 	config := new(Config)
 	config.Signal = syscall.SIGTERM
 
-	index := 0
-	for index < len(args) {
-		arg := args[index]
-		if arg == "--" {
-			index++
-
-			break
-		}
-
-		if arg == "-" || !strings.HasPrefix(arg, "-") {
-			break
-		}
-
-		if strings.HasPrefix(arg, "--") {
-			nextIndex, err := parseLongOption(config, args, index)
-			if err != nil {
-				return Config{}, err
-			}
-
-			index = nextIndex
-
-			continue
-		}
-
-		nextIndex, err := parseShortOptions(config, args, index)
-		if err != nil {
-			return Config{}, err
-		}
-
-		index = nextIndex
+	index, err := parseOptions(config, args)
+	if err != nil {
+		return Config{}, err
 	}
 
-	if config.ShowHelp || config.ShowVersion {
+	if shouldExitAfterParsing(config) {
 		return *config, nil
 	}
 
@@ -180,41 +153,21 @@ func ParseDuration(value string) (time.Duration, error) {
 		return 0, usageError("empty duration")
 	}
 
-	multiplier := time.Second
-	number := value
-	lastRune := rune(value[len(value)-1])
-
-	if unicode.IsLetter(lastRune) {
-		number = value[:len(value)-1]
-
-		switch lastRune {
-		case 's':
-			multiplier = time.Second
-		case 'm':
-			multiplier = time.Minute
-		case 'h':
-			multiplier = time.Hour
-		case 'd':
-			multiplier = hoursPerDay * time.Hour
-		default:
-			return 0, usageError("invalid duration suffix")
-		}
+	number, multiplier, err := splitDuration(value)
+	if err != nil {
+		return 0, err
 	}
 
-	parsed, err := strconv.ParseFloat(number, 64)
-	if err != nil && !isPositiveFloatOverflow(err, parsed) {
+	parsed, err := parseDurationNumber(number)
+	if err != nil {
 		return 0, usageError("invalid duration number")
 	}
 
-	if math.IsNaN(parsed) || parsed < 0 {
+	if parsed < 0 {
 		return 0, usageError("invalid duration number")
 	}
 
 	if math.IsInf(parsed, 1) {
-		if err == nil {
-			return 0, usageError("invalid duration number")
-		}
-
 		return maxDuration, nil
 	}
 
@@ -224,6 +177,35 @@ func ParseDuration(value string) (time.Duration, error) {
 	}
 
 	return time.Duration(nanoseconds), nil
+}
+
+func splitDuration(value string) (string, time.Duration, error) {
+	lastRune := rune(value[len(value)-1])
+	if !unicode.IsLetter(lastRune) {
+		return value, time.Second, nil
+	}
+
+	multiplier, err := durationMultiplier(lastRune)
+	if err != nil {
+		return "", 0, err
+	}
+
+	return value[:len(value)-1], multiplier, nil
+}
+
+func durationMultiplier(suffix rune) (time.Duration, error) {
+	switch suffix {
+	case 's':
+		return time.Second, nil
+	case 'm':
+		return time.Minute, nil
+	case 'h':
+		return time.Hour, nil
+	case 'd':
+		return hoursPerDay * time.Hour, nil
+	default:
+		return 0, usageError("invalid duration suffix")
+	}
 }
 
 // ParseSignal parses a signal name, SIG-prefixed name, or signal number.
@@ -359,12 +341,7 @@ func (state *runnerState) waitForCommand(cmd *exec.Cmd) int {
 	for {
 		select {
 		case err := <-done:
-			exitCode := state.waitExitCode(err)
-			if state.timedOut && !state.config.PreserveStatus && exitCode != signalExitCode(syscall.SIGKILL) {
-				return ExitTimedOut
-			}
-
-			return exitCode
+			return state.timeoutExitCode(err)
 		case <-initialTimer.C:
 			state.timedOut = true
 			state.sendSignal(cmd, state.config.Signal)
@@ -373,17 +350,7 @@ func (state *runnerState) waitForCommand(cmd *exec.Cmd) int {
 			state.killSent = true
 			state.sendSignal(cmd, syscall.SIGKILL)
 		case received := <-signalCh:
-			sig, ok := received.(syscall.Signal)
-			if !ok {
-				continue
-			}
-
-			if state.shouldSuppress(sig) {
-				continue
-			}
-
-			state.sendSignal(cmd, sig)
-			state.startKillTimer(killTimer)
+			state.forwardSignal(cmd, received, killTimer)
 		}
 	}
 }
@@ -460,6 +427,15 @@ func (state *runnerState) startKillTimer(timer *time.Timer) {
 	resetTimer(timer, state.config.KillAfter)
 }
 
+func (state *runnerState) timeoutExitCode(err error) int {
+	exitCode := state.waitExitCode(err)
+	if state.timedOut && !state.config.PreserveStatus && exitCode != signalExitCode(syscall.SIGKILL) {
+		return ExitTimedOut
+	}
+
+	return exitCode
+}
+
 func (state *runnerState) waitExitCode(err error) int {
 	if err == nil {
 		return ExitSuccess
@@ -509,6 +485,20 @@ func fillDefaultStreams(streams Streams) Streams {
 	return streams
 }
 
+func (state *runnerState) forwardSignal(cmd *exec.Cmd, received os.Signal, killTimer *time.Timer) {
+	sig, ok := received.(syscall.Signal)
+	if !ok {
+		return
+	}
+
+	if state.shouldSuppress(sig) {
+		return
+	}
+
+	state.sendSignal(cmd, sig)
+	state.startKillTimer(killTimer)
+}
+
 func getAppVersion() string {
 	return versionFromBuildInfo(debugReadBuildInfo())
 }
@@ -532,6 +522,19 @@ func isPositiveFloatOverflow(err error, value float64) bool {
 	}
 
 	return errors.Is(numberError.Err, strconv.ErrRange) && math.IsInf(value, 1)
+}
+
+func parseDurationNumber(number string) (float64, error) {
+	parsed, err := strconv.ParseFloat(number, 64)
+	if err != nil && !isPositiveFloatOverflow(err, parsed) {
+		return 0, fmt.Errorf("parse duration number: %w", err)
+	}
+
+	if math.IsNaN(parsed) {
+		return 0, usageError("invalid duration number")
+	}
+
+	return parsed, nil
 }
 
 func appendSignalIfMissing(signals []os.Signal, sig syscall.Signal) []os.Signal {
@@ -586,50 +589,100 @@ func notifySignals(signalCh chan<- os.Signal, timeoutSignal syscall.Signal) {
 	signal.Notify(signalCh, signals...)
 }
 
+func parseOptions(config *Config, args []string) (int, error) {
+	index := 0
+	for index < len(args) {
+		arg := args[index]
+		if arg == "--" {
+			return index + 1, nil
+		}
+
+		if isOperandStart(arg) {
+			return index, nil
+		}
+
+		nextIndex, err := parseOption(config, args, index)
+		if err != nil {
+			return 0, err
+		}
+
+		index = nextIndex
+	}
+
+	return index, nil
+}
+
+func shouldExitAfterParsing(config *Config) bool {
+	return config.ShowHelp || config.ShowVersion
+}
+
+func parseOption(config *Config, args []string, index int) (int, error) {
+	if strings.HasPrefix(args[index], "--") {
+		return parseLongOption(config, args, index)
+	}
+
+	return parseShortOptions(config, args, index)
+}
+
+func isOperandStart(arg string) bool {
+	return arg == "-" || !strings.HasPrefix(arg, "-")
+}
+
 func parseLongOption(config *Config, args []string, index int) (int, error) {
 	arg := args[index]
 
-	switch {
-	case arg == optionForeground:
+	if parseLongFlag(config, arg) {
+		return index + 1, nil
+	}
+
+	if value, ok := strings.CutPrefix(arg, optionKillAfter+"="); ok {
+		return index + 1, parseKillAfter(config, value)
+	}
+
+	if value, ok := strings.CutPrefix(arg, optionSignal+"="); ok {
+		return index + 1, parseSignalOption(config, value)
+	}
+
+	return parseLongOptionArgument(config, args, index)
+}
+
+func parseLongFlag(config *Config, arg string) bool {
+	switch arg {
+	case optionForeground:
 		config.Foreground = true
-
-		return index + 1, nil
-	case arg == optionPreserveStatus:
+	case optionPreserveStatus:
 		config.PreserveStatus = true
-
-		return index + 1, nil
-	case arg == optionVerbose:
+	case optionVerbose:
 		config.Verbose = true
-
-		return index + 1, nil
-	case arg == optionHelp:
+	case optionHelp:
 		config.ShowHelp = true
-
-		return index + 1, nil
-	case arg == optionVersion:
+	case optionVersion:
 		config.ShowVersion = true
+	default:
+		return false
+	}
 
-		return index + 1, nil
-	case arg == optionKillAfter:
+	return true
+}
+
+func parseLongOptionArgument(config *Config, args []string, index int) (int, error) {
+	switch args[index] {
+	case optionKillAfter:
 		value, nextIndex, err := requireOptionArgument(args, index, optionKillAfter)
 		if err != nil {
 			return 0, err
 		}
 
 		return nextIndex, parseKillAfter(config, value)
-	case strings.HasPrefix(arg, optionKillAfter+"="):
-		return index + 1, parseKillAfter(config, strings.TrimPrefix(arg, optionKillAfter+"="))
-	case arg == optionSignal:
+	case optionSignal:
 		value, nextIndex, err := requireOptionArgument(args, index, optionSignal)
 		if err != nil {
 			return 0, err
 		}
 
 		return nextIndex, parseSignalOption(config, value)
-	case strings.HasPrefix(arg, optionSignal+"="):
-		return index + 1, parseSignalOption(config, strings.TrimPrefix(arg, optionSignal+"="))
 	default:
-		return 0, usageError("unrecognized option " + arg)
+		return 0, usageError("unrecognized option " + args[index])
 	}
 }
 
@@ -637,43 +690,63 @@ func parseShortOptions(config *Config, args []string, index int) (int, error) {
 	arg := args[index]
 
 	for offset := 1; offset < len(arg); offset++ {
-		switch arg[offset] {
-		case 'f':
-			config.Foreground = true
-		case 'p':
-			config.PreserveStatus = true
-		case 'v':
-			config.Verbose = true
-		case 'k':
-			value := arg[offset+1:]
-			if value != "" {
-				return index + 1, parseKillAfter(config, value)
-			}
-
-			nextValue, nextIndex, err := requireOptionArgument(args, index, "-k")
-			if err != nil {
-				return 0, err
-			}
-
-			return nextIndex, parseKillAfter(config, nextValue)
-		case 's':
-			value := arg[offset+1:]
-			if value != "" {
-				return index + 1, parseSignalOption(config, value)
-			}
-
-			nextValue, nextIndex, err := requireOptionArgument(args, index, "-s")
-			if err != nil {
-				return 0, err
-			}
-
-			return nextIndex, parseSignalOption(config, nextValue)
-		default:
-			return 0, usageError("invalid option " + string(arg[offset]))
+		if parseShortFlag(config, arg[offset]) {
+			continue
 		}
+
+		return parseShortOptionArgument(config, args, index, offset)
 	}
 
 	return index + 1, nil
+}
+
+func parseShortFlag(config *Config, option byte) bool {
+	switch option {
+	case 'f':
+		config.Foreground = true
+	case 'p':
+		config.PreserveStatus = true
+	case 'v':
+		config.Verbose = true
+	default:
+		return false
+	}
+
+	return true
+}
+
+func parseShortOptionArgument(config *Config, args []string, index int, offset int) (int, error) {
+	arg := args[index]
+	value := arg[offset+1:]
+
+	switch arg[offset] {
+	case 'k':
+		return parseShortOptionValue(config, args, index, value, "-k", parseKillAfter)
+	case 's':
+		return parseShortOptionValue(config, args, index, value, "-s", parseSignalOption)
+	default:
+		return 0, usageError("invalid option " + string(arg[offset]))
+	}
+}
+
+func parseShortOptionValue(
+	config *Config,
+	args []string,
+	index int,
+	value string,
+	option string,
+	parseValue func(*Config, string) error,
+) (int, error) {
+	if value != "" {
+		return index + 1, parseValue(config, value)
+	}
+
+	nextValue, nextIndex, err := requireOptionArgument(args, index, option)
+	if err != nil {
+		return 0, err
+	}
+
+	return nextIndex, parseValue(config, nextValue)
 }
 
 func parseKillAfter(config *Config, value string) error {
