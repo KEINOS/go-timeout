@@ -51,25 +51,8 @@ dist/timeout
 
 ## Platform Support
 
-### Linux and macOS
-
-Full support for all features, including process-group signaling and all POSIX
-signals.
-
-### Windows (best-effort)
-
-Supported on Windows with the following limitations:
-
-- **Process groups**: Windows lacks POSIX process groups. The timeout command
-  only signals the direct process; descendants spawned by the command are not
-  tracked or terminated.
-- **Signals**: Only process termination is delivered. All requested signals
-  (e.g., `SIGTERM`, `SIGHUP`, `SIGCONT`) are mapped to forced termination
-  (`SIGKILL`). POSIX job-control signals (`SIGCONT`, `SIGSTOP`, etc.) are
-  rejected at parse time.
-
-These are documented platform boundaries, not bugs. Process-group-based termination
-and signal delivery on Windows may improve in future releases.
+- **Linux, macOS**: fully supported, including process-group signaling and all POSIX signals.
+- **Windows**: best-effort. Because Windows has no POSIX process groups or signals, the command is force-terminated (`TerminateProcess`): any requested `--signal` is mapped to a forced kill, descendant processes the command spawns are not terminated, and job-control signal names (`SIGCONT`, `SIGSTOP`, ...) are rejected at parse time.
 
 ## Usage as a Library
 
