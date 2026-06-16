@@ -49,6 +49,11 @@ The local binary is written to:
 dist/timeout
 ```
 
+## Platform Support
+
+- **Linux, macOS**: fully supported, including process-group signaling and all POSIX signals.
+- **Windows**: best-effort. Because Windows has no POSIX process groups or signals, the command is force-terminated (`TerminateProcess`): any requested `--signal` is mapped to a forced kill, descendant processes the command spawns are not terminated, and job-control signal names (`SIGCONT`, `SIGSTOP`, ...) are rejected at parse time.
+
 ## Usage as a Library
 
 The implementation lives in the `timeout` package and can be used from Go code.
