@@ -35,18 +35,22 @@ const (
 )
 
 const (
-	defaultVersion = "(devel)"
-	maxDuration    = time.Duration(math.MaxInt64)
+	defaultVersion            = "(devel)"
+	hoursPerDay               = 24
+	maxDuration               = time.Duration(math.MaxInt64)
+	optionArgumentStep        = 2
+	signalExitCodeBase        = 128
+	signalSuppressionDuration = 200 * time.Millisecond
 )
 
 const (
 	optionForeground     = "--foreground"
-	optionPreserveStatus = "--preserve-status"
-	optionVerbose        = "--verbose"
 	optionHelp           = "--help"
-	optionVersion        = "--version"
 	optionKillAfter      = "--kill-after"
+	optionPreserveStatus = "--preserve-status"
 	optionSignal         = "--signal"
+	optionVerbose        = "--verbose"
+	optionVersion        = "--version"
 )
 
 // ErrUsage marks command-line usage errors.
@@ -55,22 +59,22 @@ var ErrUsage = errors.New("usage error")
 var debugReadBuildInfo = debug.ReadBuildInfo
 
 var supportedSignals = map[string]syscall.Signal{
-	"HUP":  syscall.SIGHUP,
-	"INT":  syscall.SIGINT,
-	"QUIT": syscall.SIGQUIT,
-	"ILL":  syscall.SIGILL,
 	"ABRT": syscall.SIGABRT,
-	"KILL": syscall.SIGKILL,
 	"ALRM": syscall.SIGALRM,
-	"TERM": syscall.SIGTERM,
-	"USR1": syscall.SIGUSR1,
-	"USR2": syscall.SIGUSR2,
 	"CONT": syscall.SIGCONT,
+	"HUP":  syscall.SIGHUP,
+	"ILL":  syscall.SIGILL,
+	"INT":  syscall.SIGINT,
+	"KILL": syscall.SIGKILL,
+	"PIPE": syscall.SIGPIPE,
+	"QUIT": syscall.SIGQUIT,
 	"STOP": syscall.SIGSTOP,
+	"TERM": syscall.SIGTERM,
 	"TSTP": syscall.SIGTSTP,
 	"TTIN": syscall.SIGTTIN,
 	"TTOU": syscall.SIGTTOU,
-	"PIPE": syscall.SIGPIPE,
+	"USR1": syscall.SIGUSR1,
+	"USR2": syscall.SIGUSR2,
 }
 
 // Config contains parsed timeout options and operands.
@@ -191,7 +195,7 @@ func ParseDuration(value string) (time.Duration, error) {
 		case 'h':
 			multiplier = time.Hour
 		case 'd':
-			multiplier = 24 * time.Hour
+			multiplier = hoursPerDay * time.Hour
 		default:
 			return 0, usageError("invalid duration suffix")
 		}
@@ -404,7 +408,7 @@ func (state *runnerState) sendSignal(cmd *exec.Cmd, sig syscall.Signal) {
 	_ = cmd.Process.Signal(sig)
 	_ = syscall.Kill(-state.pgid, sig)
 	state.suppressed = sig
-	state.suppressBy = time.Now().Add(200 * time.Millisecond)
+	state.suppressBy = time.Now().Add(signalSuppressionDuration)
 
 	if sig != syscall.SIGKILL && sig != syscall.SIGCONT {
 		_ = cmd.Process.Signal(syscall.SIGCONT)
@@ -699,7 +703,7 @@ func requireOptionArgument(args []string, index int, option string) (string, int
 		return "", 0, usageError("option requires an argument " + option)
 	}
 
-	return args[index+1], index + 2, nil
+	return args[index+1], index + optionArgumentStep, nil
 }
 
 func resetTimer(timer *time.Timer, duration time.Duration) {
@@ -714,7 +718,7 @@ func resetTimer(timer *time.Timer, duration time.Duration) {
 }
 
 func signalExitCode(sig syscall.Signal) int {
-	return 128 + int(sig)
+	return signalExitCodeBase + int(sig)
 }
 
 func signalName(sig syscall.Signal) string {
