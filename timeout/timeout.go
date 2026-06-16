@@ -56,7 +56,10 @@ const (
 // ErrUsage marks command-line usage errors.
 var ErrUsage = errors.New("usage error")
 
+// Test seams for external package calls that are hard to exercise directly.
 var debugReadBuildInfo = debug.ReadBuildInfo
+var syscallGetpgid = syscall.Getpgid
+var syscallSetpgid = syscall.Setpgid
 
 var supportedSignals = map[string]syscall.Signal{
 	"ABRT": syscall.SIGABRT,
@@ -296,14 +299,14 @@ Options:
 // This lets timeout send signals to the whole command.
 func (state *runnerState) runCommand() int {
 	if !state.config.Foreground {
-		err := syscall.Setpgid(0, 0)
+		err := syscallSetpgid(0, 0)
 		if err != nil && !errors.Is(err, syscall.EPERM) {
 			_, _ = fmt.Fprintf(state.streams.Stderr, "timeout: set process group: %v\n", err)
 
 			return ExitInternalFailure
 		}
 
-		pgid, err := syscall.Getpgid(0)
+		pgid, err := syscallGetpgid(0)
 		if err != nil {
 			_, _ = fmt.Fprintf(state.streams.Stderr, "timeout: get process group: %v\n", err)
 

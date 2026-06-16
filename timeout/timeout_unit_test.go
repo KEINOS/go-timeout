@@ -3,12 +3,14 @@ package timeout
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -26,6 +28,7 @@ const (
 	commandTrue   = "true"
 
 	durationFastTimeout = "0.01s"
+	pgidTest            = 424242
 )
 
 // ============================================================================
@@ -33,6 +36,8 @@ const (
 // ============================================================================
 
 var errTestStartFailure = errors.New("test start failure")
+var errTestStreamWrite = errors.New("test stream write")
+var errTestSyscallFailure = errors.New("test syscall failure")
 
 // ============================================================================
 //  Test Section
@@ -116,10 +121,16 @@ func TestParseSignal(t *testing.T) {
 func TestParseSignalRejectsUnsupportedNumber(t *testing.T) {
 	t.Parallel()
 
-	_, err := ParseSignal("999")
+	for _, input := range invalidSignalInputs {
+		t.Run(input, func(t *testing.T) {
+			t.Parallel()
 
-	require.Error(t, err)
-	require.ErrorIs(t, err, ErrUsage)
+			_, err := ParseSignal(input)
+
+			require.Error(t, err)
+			require.ErrorIs(t, err, ErrUsage)
+		})
+	}
 }
 
 func TestAppendSignalIfMissing(t *testing.T) {
@@ -284,6 +295,54 @@ func TestClassifyStartError(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // no parallel due to editing process-group syscall globals
+func TestRunCommandProcessGroupSetup(t *testing.T) {
+	stderr := new(bytes.Buffer)
+	state := newProcessGroupTestState(stderr)
+
+	withProcessGroupFuncs(t, nil, nil)
+
+	got := state.runCommand()
+
+	require.Equal(t, ExitSuccess, got)
+	require.Equal(t, pgidTest, state.pgid)
+	require.Empty(t, stderr.String())
+}
+
+//nolint:paralleltest // no parallel due to editing process-group syscall globals
+func TestRunCommandAllowsExistingProcessGroup(t *testing.T) {
+	stderr := new(bytes.Buffer)
+	state := newProcessGroupTestState(stderr)
+
+	withProcessGroupFuncs(t, func(int, int) error {
+		return syscall.EPERM
+	}, nil)
+
+	got := state.runCommand()
+
+	require.Equal(t, ExitSuccess, got)
+	require.Equal(t, pgidTest, state.pgid)
+	require.Empty(t, stderr.String())
+}
+
+//nolint:paralleltest // no parallel due to editing process-group syscall globals
+func TestRunCommandReportsProcessGroupErrors(t *testing.T) {
+	for _, tt := range runCommandProcessGroupErrorTestCases {
+		//nolint:paralleltest // no parallel due to editing process-group syscall globals
+		t.Run(tt.name, func(t *testing.T) {
+			stderr := new(bytes.Buffer)
+			state := newProcessGroupTestState(stderr)
+
+			withProcessGroupFuncs(t, tt.setpgid, tt.getpgid)
+
+			got := state.runCommand()
+
+			require.Equal(t, ExitInternalFailure, got)
+			require.Contains(t, stderr.String(), tt.wantStderr)
+		})
+	}
+}
+
 func TestRunStaticOutput(t *testing.T) {
 	t.Parallel()
 
@@ -424,6 +483,97 @@ func TestRunCommandRejectsInvalidExecutableFormat(t *testing.T) {
 	require.Contains(t, stderr.String(), "failed to run command")
 }
 
+func TestWaitExitCodeReportsUnexpectedWaitError(t *testing.T) {
+	t.Parallel()
+
+	stderr := new(bytes.Buffer)
+	state := new(runnerState)
+	state.streams = fillDefaultStreams(Streams{
+		Stdin:  bytes.NewReader(nil),
+		Stdout: io.Discard,
+		Stderr: stderr,
+	})
+
+	got := state.waitExitCode(errTestStartFailure)
+
+	require.Equal(t, ExitInternalFailure, got)
+	require.Contains(t, stderr.String(), "wait for command")
+}
+
+func TestFillDefaultStreamsUsesDefaultStderr(t *testing.T) {
+	t.Parallel()
+
+	streams := fillDefaultStreams(Streams{
+		Stdin:  bytes.NewReader(nil),
+		Stdout: io.Discard,
+		Stderr: nil,
+	})
+
+	require.NotNil(t, streams.Stderr)
+}
+
+func TestLockedWriterWrapsWriteError(t *testing.T) {
+	t.Parallel()
+
+	writer := lockedWriter{
+		mutex:  new(sync.Mutex),
+		writer: errorWriter{},
+	}
+
+	written, err := writer.Write([]byte("data"))
+
+	require.Zero(t, written)
+	require.ErrorIs(t, err, errTestStreamWrite)
+}
+
+func TestParseDurationNumberRejectsNaN(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseDurationNumber("NaN")
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrUsage)
+}
+
+func TestIsPositiveFloatOverflowRejectsOtherErrors(t *testing.T) {
+	t.Parallel()
+
+	require.False(t, isPositiveFloatOverflow(errTestStartFailure, 0))
+}
+
+func TestDefaultGroupSignalIsBestEffort(t *testing.T) {
+	t.Parallel()
+
+	require.NotPanics(t, func() {
+		defaultGroupSignal(pgidTest, 0)
+	})
+}
+
+func TestSendGroupSignalUsesDefaultSender(t *testing.T) {
+	t.Parallel()
+
+	state := new(runnerState)
+	state.pgid = pgidTest
+
+	require.NotPanics(t, func() {
+		state.sendGroupSignal(0)
+	})
+}
+
+func TestSignalNameFallsBackForUnknownSignal(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "signal 99", signalName(syscall.Signal(99)))
+}
+
+func TestStopTimerAllowsNil(t *testing.T) {
+	t.Parallel()
+
+	require.NotPanics(t, func() {
+		stopTimer(nil)
+	})
+}
+
 // ============================================================================
 //  Helpers Section
 // ============================================================================
@@ -482,7 +632,16 @@ type classifyStartErrorTestCase struct {
 	want int
 }
 
+type runCommandProcessGroupErrorTestCase struct {
+	setpgid    func(int, int) error
+	getpgid    func(int) (int, error)
+	name       string
+	wantStderr string
+}
+
 type fakeSignal string
+
+type errorWriter struct{}
 
 type signalRecorder struct {
 	processSignals []syscall.Signal
@@ -493,6 +652,10 @@ func (signal fakeSignal) Signal() {}
 
 func (signal fakeSignal) String() string {
 	return string(signal)
+}
+
+func (writer errorWriter) Write(_ []byte) (int, error) {
+	return 0, errTestStreamWrite
 }
 
 func newSignalRecorder() *signalRecorder {
@@ -564,6 +727,59 @@ func writerString(writer any) string {
 	return stringer.String()
 }
 
+func newProcessGroupTestState(stderr io.Writer) *runnerState {
+	state := new(runnerState)
+	state.config = Config{
+		Foreground:     false,
+		PreserveStatus: false,
+		Verbose:        false,
+		ShowHelp:       false,
+		ShowVersion:    false,
+		Duration:       0,
+		KillAfter:      0,
+		Signal:         syscall.SIGTERM,
+		Command:        []string{commandTrue},
+	}
+	state.streams = fillDefaultStreams(Streams{
+		Stdin:  bytes.NewReader(nil),
+		Stdout: io.Discard,
+		Stderr: stderr,
+	})
+
+	return state
+}
+
+func withProcessGroupFuncs(
+	t *testing.T,
+	setpgid func(int, int) error,
+	getpgid func(int) (int, error),
+) {
+	t.Helper()
+
+	oldSetpgid := syscallSetpgid
+	oldGetpgid := syscallGetpgid
+
+	if setpgid == nil {
+		setpgid = func(int, int) error {
+			return nil
+		}
+	}
+
+	if getpgid == nil {
+		getpgid = func(int) (int, error) {
+			return pgidTest, nil
+		}
+	}
+
+	syscallSetpgid = setpgid
+	syscallGetpgid = getpgid
+
+	t.Cleanup(func() {
+		syscallSetpgid = oldSetpgid
+		syscallGetpgid = oldGetpgid
+	})
+}
+
 // ============================================================================
 //  Data Providers Section
 // ============================================================================
@@ -629,6 +845,51 @@ var parseTestCases = []parseTestCase{
 			Command:        []string{commandSleep, "4"},
 		},
 	},
+	{
+		name: "parses long option arguments",
+		args: []string{optionKillAfter, "1s", optionSignal, "USR2", "3", commandSleep, "4"},
+		want: Config{
+			Foreground:     false,
+			PreserveStatus: false,
+			Verbose:        false,
+			ShowHelp:       false,
+			ShowVersion:    false,
+			Duration:       3 * time.Second,
+			KillAfter:      1 * time.Second,
+			Signal:         syscall.SIGUSR2,
+			Command:        []string{commandSleep, "4"},
+		},
+	},
+	{
+		name: "parses short option inline values",
+		args: []string{"-k1s", "-sUSR1", "3", commandSleep, "4"},
+		want: Config{
+			Foreground:     false,
+			PreserveStatus: false,
+			Verbose:        false,
+			ShowHelp:       false,
+			ShowVersion:    false,
+			Duration:       3 * time.Second,
+			KillAfter:      1 * time.Second,
+			Signal:         syscall.SIGUSR1,
+			Command:        []string{commandSleep, "4"},
+		},
+	},
+	{
+		name: "stops option parsing with double dash",
+		args: []string{"--", "3", commandSleep, "4"},
+		want: Config{
+			Foreground:     false,
+			PreserveStatus: false,
+			Verbose:        false,
+			ShowHelp:       false,
+			ShowVersion:    false,
+			Duration:       3 * time.Second,
+			KillAfter:      0,
+			Signal:         syscall.SIGTERM,
+			Command:        []string{commandSleep, "4"},
+		},
+	},
 }
 
 var parseUsageErrorTestCases = []parseUsageErrorTestCase{
@@ -637,9 +898,11 @@ var parseUsageErrorTestCases = []parseUsageErrorTestCase{
 	{name: "unknown option", args: []string{"--bogus"}},
 	{name: "missing signal argument", args: []string{optionSignal}},
 	{name: "missing kill after argument", args: []string{"-k"}},
+	{name: "missing long kill after argument", args: []string{optionKillAfter}},
 	{name: "invalid duration", args: []string{"bad", commandTrue}},
 	{name: "invalid kill after", args: []string{optionKillAfter + "=bad", "1s", commandTrue}},
 	{name: "invalid signal", args: []string{optionSignal + "=NOPE", "1s", commandTrue}},
+	{name: "invalid short option", args: []string{"-x"}},
 }
 
 var parseDurationTestCases = []parseDurationTestCase{
@@ -649,6 +912,7 @@ var parseDurationTestCases = []parseDurationTestCase{
 	{name: "hours suffix", in: "0.5h", want: 30 * time.Minute},
 	{name: "days suffix", in: "1d", want: 24 * time.Hour},
 	{name: "zero disables", in: "0", want: 0},
+	{name: "finite huge positive clamps", in: "10000000000s", want: maxDuration},
 	{name: "huge positive clamps", in: "1e999d", want: maxDuration},
 }
 
@@ -660,6 +924,8 @@ var parseSignalTestCases = []parseSignalTestCase{
 	{name: "lowercase", in: "term", want: syscall.SIGTERM},
 	{name: "number", in: "15", want: syscall.SIGTERM},
 }
+
+var invalidSignalInputs = []string{"", "0", "-1", "999"}
 
 var runStaticOutputTestCases = []runStaticOutputTestCase{
 	{
@@ -827,6 +1093,27 @@ var classifyStartErrorTestCases = []classifyStartErrorTestCase{
 		name: "other",
 		err:  errTestStartFailure,
 		want: ExitInternalFailure,
+	},
+}
+
+var runCommandProcessGroupErrorTestCases = []runCommandProcessGroupErrorTestCase{
+	{
+		name: "setpgid failure",
+		setpgid: func(int, int) error {
+			return errTestSyscallFailure
+		},
+		getpgid:    nil,
+		wantStderr: "set process group",
+	},
+	{
+		name: "getpgid failure",
+		setpgid: func(int, int) error {
+			return nil
+		},
+		getpgid: func(int) (int, error) {
+			return 0, errTestSyscallFailure
+		},
+		wantStderr: "get process group",
 	},
 }
 
