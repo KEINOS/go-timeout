@@ -41,6 +41,14 @@ func (state *runnerState) setupProcessGroup() (int, bool) {
 	return 0, true
 }
 
+// protectFromJobControlStop is a no-op on Windows: there are no POSIX
+// job-control signals (SIGTTIN/SIGTTOU), so the monitor cannot be stopped by a
+// background child's TTY access.
+func (state *runnerState) protectFromJobControlStop() {}
+
+// releaseJobControlProtection is a no-op on Windows; see protectFromJobControlStop.
+func (state *runnerState) releaseJobControlProtection() {}
+
 // deliverSignal terminates the command process on timeout.
 //
 // Windows cannot deliver arbitrary POSIX signals to another process;

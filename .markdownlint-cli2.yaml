@@ -3,4 +3,5 @@ config:
   no-inline-html: false
   line-length: false
 ignores:
+  - ".temp_agent_logs/**"
   - "graphify-out/**"

@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -286,6 +287,134 @@ func TestForwardSignal(t *testing.T) {
 		require.Equal(t, []syscall.Signal{syscall.SIGTERM, syscall.SIGCONT}, recorder.processSignals)
 		require.Equal(t, []syscall.Signal{syscall.SIGTERM, syscall.SIGCONT}, recorder.groupSignals)
 	})
+}
+
+func TestBuildPropagationSignals(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range buildPropagationSignalsTestCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			isIgnored := func(sig syscall.Signal) bool {
+				return slices.Contains(tt.ignored, sig)
+			}
+
+			got := buildPropagationSignals(tt.timeoutSignal, isIgnored)
+
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+//nolint:paralleltest // no parallel: swaps signalIgnored/signalNotify seams
+func TestNotifySignalsSkipsSignalNotifyWhenSignalSetIsEmpty(t *testing.T) {
+	oldIgnored := signalIgnored
+	oldNotify := signalNotify
+	notifyCalls := 0
+
+	signalIgnored = func(sig syscall.Signal) bool {
+		return slices.Contains(basePropagationSignals, sig)
+	}
+	signalNotify = func(chan<- os.Signal, ...os.Signal) {
+		notifyCalls++
+	}
+
+	t.Cleanup(func() {
+		signalIgnored = oldIgnored
+		signalNotify = oldNotify
+	})
+
+	notifySignals(make(chan os.Signal, 1), 0)
+
+	require.Zero(t, notifyCalls, "signal.Notify with no signals would subscribe to all signals")
+}
+
+//nolint:paralleltest // no parallel: swaps the jobControlNotify/jobControlStop seams
+func TestProtectFromJobControlStopForeground(t *testing.T) {
+	recorder := withJobControlSeams(t)
+
+	state := new(runnerState)
+	state.config.Foreground = true
+
+	state.protectFromJobControlStop()
+
+	require.Nil(t, state.jobControlCh, "foreground mode must not register job-control signals")
+	require.Empty(t, recorder.notified)
+
+	state.releaseJobControlProtection()
+
+	require.Zero(t, recorder.stopCount)
+}
+
+//nolint:paralleltest // no parallel: swaps the jobControlNotify/jobControlStop seams
+func TestProtectFromJobControlStopBackground(t *testing.T) {
+	recorder := withJobControlSeams(t)
+
+	state := new(runnerState)
+
+	state.protectFromJobControlStop()
+
+	require.NotNil(t, state.jobControlCh, "background mode must register job-control signals")
+	require.Equal(t, []os.Signal{syscall.SIGTTIN, syscall.SIGTTOU}, recorder.notified)
+
+	state.releaseJobControlProtection()
+
+	require.Nil(t, state.jobControlCh)
+	require.Equal(t, 1, recorder.stopCount)
+
+	// A second release is a no-op so the deferred cleanup is always safe.
+	state.releaseJobControlProtection()
+
+	require.Equal(t, 1, recorder.stopCount)
+}
+
+// TestJobControlHelperProcess is the child half of
+// TestRunDoesNotLeakJobControlIgnoreToChild. It exits non-zero if it inherited
+// SIGTTIN or SIGTTOU as ignored, proving the monitor's os/signal registration
+// does not leak an ignored disposition into the executed command.
+func TestJobControlHelperProcess(t *testing.T) {
+	t.Parallel()
+
+	if os.Getenv("GO_TIMEOUT_HELPER_PROCESS") != "job-control" {
+		return
+	}
+
+	if signal.Ignored(syscall.SIGTTIN) || signal.Ignored(syscall.SIGTTOU) {
+		os.Exit(3)
+	}
+
+	os.Exit(0)
+}
+
+//nolint:paralleltest // no parallel: real non-foreground Run changes the process group and signal state
+func TestRunDoesNotLeakJobControlIgnoreToChild(t *testing.T) {
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	// Non-foreground (no -f) so the monitor activates SIGTTIN/SIGTTOU protection
+	// before forking the helper. The helper verifies it did not inherit those as
+	// ignored.
+	args := []string{
+		"5s",
+		"env", "GO_TIMEOUT_HELPER_PROCESS=job-control",
+		os.Args[0], "-test.run=TestJobControlHelperProcess",
+	}
+
+	got := Run(args, Streams{
+		Stdin:  bytes.NewReader(nil),
+		Stdout: stdout,
+		Stderr: stderr,
+	})
+
+	require.Equalf(
+		t,
+		ExitSuccess,
+		got,
+		"child saw SIGTTIN/SIGTTOU as ignored; stdout=%q stderr=%q",
+		stdout.String(),
+		stderr.String(),
+	)
 }
 
 func TestClassifyStartError(t *testing.T) {
@@ -729,6 +858,13 @@ type runCommandForegroundTestCase struct {
 	wantCode   int
 }
 
+type buildPropagationSignalsTestCase struct {
+	name          string
+	timeoutSignal syscall.Signal
+	ignored       []syscall.Signal
+	want          []os.Signal
+}
+
 type classifyStartErrorTestCase struct {
 	err  error
 	name string
@@ -763,6 +899,36 @@ func (writer errorWriter) Write(_ []byte) (int, error) {
 
 func newSignalRecorder() *signalRecorder {
 	return new(signalRecorder)
+}
+
+type jobControlRecorder struct {
+	notified  []os.Signal
+	stopCount int
+}
+
+// withJobControlSeams swaps the jobControlNotify/jobControlStop seams for
+// recorders so the activation and cleanup can be asserted without registering
+// real process-wide signal handlers. The originals are restored on cleanup.
+func withJobControlSeams(t *testing.T) *jobControlRecorder {
+	t.Helper()
+
+	recorder := new(jobControlRecorder)
+	oldNotify := jobControlNotify
+	oldStop := jobControlStop
+
+	jobControlNotify = func(_ chan<- os.Signal, signals ...os.Signal) {
+		recorder.notified = append(recorder.notified, signals...)
+	}
+	jobControlStop = func(chan<- os.Signal) {
+		recorder.stopCount++
+	}
+
+	t.Cleanup(func() {
+		jobControlNotify = oldNotify
+		jobControlStop = oldStop
+	})
+
+	return recorder
 }
 
 func (recorder *signalRecorder) process(_ *exec.Cmd, sig syscall.Signal) {
@@ -1209,6 +1375,81 @@ var runCommandForegroundTestCases = []runCommandForegroundTestCase{
 		wantCode:   signalExitCode(syscall.SIGKILL),
 		wantStdout: "",
 		wantStderr: "",
+	},
+}
+
+var buildPropagationSignalsTestCases = []buildPropagationSignalsTestCase{
+	{
+		name:          "none ignored keeps base set",
+		timeoutSignal: syscall.SIGTERM,
+		ignored:       nil,
+		want: []os.Signal{
+			syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM,
+		},
+	},
+	{
+		name:          "ignored base signal is filtered out",
+		timeoutSignal: syscall.SIGTERM,
+		ignored:       []syscall.Signal{syscall.SIGINT},
+		want: []os.Signal{
+			syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGTERM,
+		},
+	},
+	{
+		name:          "multiple ignored base signals are filtered out",
+		timeoutSignal: syscall.SIGTERM,
+		ignored:       []syscall.Signal{syscall.SIGINT, syscall.SIGQUIT},
+		want: []os.Signal{
+			syscall.SIGHUP, syscall.SIGTERM,
+		},
+	},
+	{
+		name:          "ignored timeout signal is still included",
+		timeoutSignal: syscall.SIGINT,
+		ignored:       []syscall.Signal{syscall.SIGINT},
+		want: []os.Signal{
+			syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM,
+		},
+	},
+	{
+		name:          "non-base timeout signal is appended without duplicates",
+		timeoutSignal: syscall.SIGUSR1,
+		ignored:       nil,
+		want: []os.Signal{
+			syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGUSR1,
+		},
+	},
+	{
+		name:          "ignored non-base timeout signal is still appended",
+		timeoutSignal: syscall.SIGUSR1,
+		ignored:       []syscall.Signal{syscall.SIGUSR1},
+		want: []os.Signal{
+			syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGUSR1,
+		},
+	},
+	{
+		name:          "all base ignored leaves only the timeout signal",
+		timeoutSignal: syscall.SIGTERM,
+		ignored: []syscall.Signal{
+			syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM,
+		},
+		want: []os.Signal{syscall.SIGTERM},
+	},
+	{
+		name:          "zero timeout signal is not appended",
+		timeoutSignal: 0,
+		ignored:       []syscall.Signal{syscall.SIGINT},
+		want: []os.Signal{
+			syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGTERM,
+		},
+	},
+	{
+		name:          "zero timeout signal with all base ignored returns empty set",
+		timeoutSignal: 0,
+		ignored: []syscall.Signal{
+			syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM,
+		},
+		want: []os.Signal{},
 	},
 }
 

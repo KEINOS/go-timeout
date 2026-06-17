@@ -58,6 +58,28 @@ var ErrUsage = errors.New("usage error")
 // Test seams for external package calls that are hard to exercise directly.
 var debugReadBuildInfo = debug.ReadBuildInfo
 
+// signalIgnored reports whether sig was inherited with an ignored disposition.
+// It is a test seam so the propagation-signal filtering can be exercised without
+// mutating process-wide signal state.
+var signalIgnored = func(sig syscall.Signal) bool {
+	return signal.Ignored(sig)
+}
+
+// signalNotify wraps signal.Notify so notifySignals can be tested without
+// registering process-wide signal handlers.
+var signalNotify = func(channel chan<- os.Signal, signals ...os.Signal) {
+	signal.Notify(channel, signals...)
+}
+
+// basePropagationSignals are the terminating signals the monitor forwards to the
+// monitored command when the monitor itself receives one of them.
+var basePropagationSignals = []syscall.Signal{
+	syscall.SIGHUP,
+	syscall.SIGINT,
+	syscall.SIGQUIT,
+	syscall.SIGTERM,
+}
+
 // exitErrorWaitStatus decodes the platform wait status from an exit error.
 // It is a test seam: on the supported platforms Sys() is always a
 // syscall.WaitStatus, so the non-WaitStatus fallback in waitExitCode is
@@ -290,6 +312,9 @@ func (state *runnerState) runCommand() int {
 	if code, ok := state.setupProcessGroup(); !ok {
 		return code
 	}
+
+	state.protectFromJobControlStop()
+	defer state.releaseJobControlProtection()
 
 	//nolint:gosec // Running the requested command is the purpose of this package.
 	cmd := exec.CommandContext(context.Background(), state.config.Command[0], state.config.Command[1:]...)
@@ -563,18 +588,40 @@ func newTimer(duration time.Duration) *time.Timer {
 }
 
 func notifySignals(signalCh chan<- os.Signal, timeoutSignal syscall.Signal) {
-	signals := []os.Signal{
-		syscall.SIGHUP,
-		syscall.SIGINT,
-		syscall.SIGQUIT,
-		syscall.SIGTERM,
+	signals := buildPropagationSignals(timeoutSignal, signalIgnored)
+	if len(signals) == 0 {
+		return
+	}
+
+	signalNotify(signalCh, signals...)
+}
+
+// buildPropagationSignals builds the set of signals the monitor registers for
+// propagation. A base propagation signal is excluded when isIgnored reports it
+// was inherited as ignored, except for the selected timeout signal, which is
+// always included when non-zero. GNU timeout skips handlers for signals
+// inherited as ignored so background jobs keep their conventional
+// SIGINT/SIGQUIT-ignored behavior, while the selected timeout signal must still
+// be handled even if it was inherited ignored. Duplicates are collapsed.
+func buildPropagationSignals(
+	timeoutSignal syscall.Signal,
+	isIgnored func(syscall.Signal) bool,
+) []os.Signal {
+	signals := make([]os.Signal, 0, len(basePropagationSignals)+1)
+
+	for _, sig := range basePropagationSignals {
+		if sig != timeoutSignal && isIgnored(sig) {
+			continue
+		}
+
+		signals = appendSignalIfMissing(signals, sig)
 	}
 
 	if timeoutSignal != 0 {
 		signals = appendSignalIfMissing(signals, timeoutSignal)
 	}
 
-	signal.Notify(signalCh, signals...)
+	return signals
 }
 
 func parseOptions(config *Config, args []string) (int, error) {

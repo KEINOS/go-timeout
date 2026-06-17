@@ -5,7 +5,9 @@ package timeout
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"os/signal"
 	"syscall"
 	"time"
 )
@@ -21,14 +23,27 @@ type groupSignalFunc func(int, syscall.Signal)
 
 // platformState carries the Unix signal-delivery seams: the per-process
 // signaler shared by all platforms plus the Unix-only process-group signaler.
+// jobControlCh keeps the SIGTTIN/SIGTTOU notification alive for the run so the
+// monitor is not stopped by a background child's TTY access.
 type platformState struct {
 	signalProcess processSignalFunc
 	signalGroup   groupSignalFunc
+	jobControlCh  chan os.Signal
 }
 
 // Test seams for external package calls that are hard to exercise directly.
 var syscallGetpgid = syscall.Getpgid
 var syscallSetpgid = syscall.Setpgid
+
+// jobControlNotify and jobControlStop wrap the os/signal calls that protect the
+// monitor from SIGTTIN/SIGTTOU. They are test seams so the activation and
+// cleanup can be exercised without mutating process-wide signal state.
+var jobControlNotify = func(channel chan<- os.Signal, signals ...os.Signal) {
+	signal.Notify(channel, signals...)
+}
+var jobControlStop = func(channel chan<- os.Signal) {
+	signal.Stop(channel)
+}
 
 // supportedSignals is the full GNU-compatible signal table on Unix.
 var supportedSignals = map[string]syscall.Signal{
@@ -75,6 +90,34 @@ func (state *runnerState) setupProcessGroup() (int, bool) {
 	state.pgid = pgid
 
 	return 0, true
+}
+
+// protectFromJobControlStop registers SIGTTIN and SIGTTOU on a monitor-held
+// channel in non-foreground mode so the monitor is not stopped when a background
+// child touches the controlling TTY. Registering via os/signal (rather than
+// signal.Ignore) matters because Go resets its handled signals to their default
+// dispositions in the child before exec, so the child does not inherit an
+// ignored disposition. Foreground mode keeps the default TTY behavior.
+func (state *runnerState) protectFromJobControlStop() {
+	if state.config.Foreground {
+		return
+	}
+
+	channel := make(chan os.Signal, 1)
+	jobControlNotify(channel, syscall.SIGTTIN, syscall.SIGTTOU)
+	state.jobControlCh = channel
+}
+
+// releaseJobControlProtection stops the SIGTTIN/SIGTTOU notification installed by
+// protectFromJobControlStop. It is safe to call when protection was never
+// activated (foreground mode) and is idempotent.
+func (state *runnerState) releaseJobControlProtection() {
+	if state.jobControlCh == nil {
+		return
+	}
+
+	jobControlStop(state.jobControlCh)
+	state.jobControlCh = nil
 }
 
 // deliverSignal applies the GNU-compatible signal delivery policy.
