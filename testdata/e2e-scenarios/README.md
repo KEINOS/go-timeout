@@ -13,6 +13,9 @@ timeout: <timeout duration, e.g., "30s">
 cases:
   - name: <test case name>
     args: ["<command-line arguments for timeout>"]
+    stdin: "<stdin text>"
+    send_signal: TERM
+    send_signal_after: 100ms
     want:
       exit_code: <expected exit code, e.g., 0>
       stdout:
@@ -34,3 +37,7 @@ cases:
       stderr:
         equals: ""
 ```
+
+`send_signal` and `send_signal_after` are optional. When both are set, the E2E
+harness sends the named signal to the top-level `timeout` process after the
+given delay. Supported signal names are `HUP`, `INT`, `QUIT`, and `TERM`.

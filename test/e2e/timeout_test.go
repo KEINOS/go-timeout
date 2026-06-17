@@ -41,6 +41,12 @@ const (
 
 var errMultipleYAMLDocuments = errors.New("scenario file must contain exactly one YAML document")
 
+var (
+	errCaseSignalAfterRequired = errors.New("send_signal_after is required when send_signal is set")
+	errCaseSignalRequired      = errors.New("send_signal is required when send_signal_after is set")
+	errUnsupportedCaseSignal   = errors.New("unsupported signal")
+)
+
 // ============================================================================
 //  Test Section
 // ============================================================================
@@ -124,6 +130,88 @@ cases:
 	require.ErrorContains(t, err, "field unknown_key not found")
 }
 
+func Test_decodeTestScenarioRejectsInvalidSignalConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{
+			name: "signal without delay",
+			data: []byte(`
+name: signal config
+cases:
+  - name: send signal
+    args: ["0", "true"]
+    send_signal: TERM
+    want:
+      exit_code: 0
+`),
+			want: "send_signal_after",
+		},
+		{
+			name: "delay without signal",
+			data: []byte(`
+name: signal config
+cases:
+  - name: send signal
+    args: ["0", "true"]
+    send_signal_after: 10ms
+    want:
+      exit_code: 0
+`),
+			want: "send_signal",
+		},
+		{
+			name: "unsupported signal",
+			data: []byte(`
+name: signal config
+cases:
+  - name: send signal
+    args: ["0", "true"]
+    send_signal: NOPE
+    send_signal_after: 10ms
+    want:
+      exit_code: 0
+`),
+			want: "unsupported signal",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := decodeTestScenario(tt.data)
+
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+}
+
+func Test_decodeTestScenarioSupportsSignalConfig(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`
+name: signal config
+cases:
+  - name: send signal
+    args: ["0", "true"]
+    send_signal: TERM
+    send_signal_after: 10ms
+    want:
+      exit_code: 0
+`)
+
+	suite, err := decodeTestScenario(data)
+
+	require.NoError(t, err)
+	require.Equal(t, "TERM", suite.Cases[0].SendSignal)
+	require.Equal(t, 10*time.Millisecond, suite.Cases[0].SendSignalAfter)
+}
+
 // ============================================================================
 //  Setup Section
 // ============================================================================
@@ -141,11 +229,13 @@ type Suite struct {
 
 // Case represents a single test case with its configuration and expected outcomes.
 type Case struct {
-	Name  string            `yaml:"name"`
-	Args  []string          `yaml:"args"`
-	Stdin string            `yaml:"stdin"`
-	Env   map[string]string `yaml:"env"`
-	Want  Want              `yaml:"want"`
+	Name            string            `yaml:"name"`
+	Args            []string          `yaml:"args"`
+	Stdin           string            `yaml:"stdin"`
+	Env             map[string]string `yaml:"env"`
+	SendSignal      string            `yaml:"send_signal"`
+	SendSignalAfter time.Duration     `yaml:"send_signal_after"`
+	Want            Want              `yaml:"want"`
 }
 
 // Want represents the expected outcomes of a test case, including exit code and
@@ -202,6 +292,11 @@ func decodeTestScenario(data []byte) (*Suite, error) {
 
 	err = decoder.Decode(&extra)
 	if errors.Is(err, io.EOF) {
+		err := validateTestScenario(&suite)
+		if err != nil {
+			return nil, err
+		}
+
 		return &suite, nil
 	} else if err != nil {
 		return nil, fmt.Errorf("decode extra YAML document: %w", err)
@@ -263,6 +358,24 @@ func loadTestScenario(t *testing.T, path string) *Suite {
 	return suite
 }
 
+func parseCaseSignal(value string) (os.Signal, error) {
+	normalized := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(value)), "SIG")
+
+	// Keep this list narrow until a scenario needs another signal.
+	switch normalized {
+	case "HUP":
+		return syscall.SIGHUP, nil
+	case "INT":
+		return syscall.SIGINT, nil
+	case "QUIT":
+		return syscall.SIGQUIT, nil
+	case "TERM":
+		return syscall.SIGTERM, nil
+	default:
+		return nil, fmt.Errorf("%w %q", errUnsupportedCaseSignal, value)
+	}
+}
+
 func resolvedPath(t *testing.T, path string) string {
 	t.Helper()
 
@@ -278,6 +391,34 @@ func resolvedPath(t *testing.T, path string) string {
 		"failed to resolve path during test: %v", err)
 
 	return pathAbsClean
+}
+
+func scheduleCaseSignal(t *testing.T, process *os.Process, testCase Case) context.CancelFunc {
+	t.Helper()
+
+	if testCase.SendSignal == "" && testCase.SendSignalAfter == 0 {
+		return func() {}
+	}
+
+	// Re-parse here so direct Case construction stays guarded like YAML input.
+	sig, err := parseCaseSignal(testCase.SendSignal)
+	require.NoError(t, err, "invalid send_signal for test case %q", testCase.Name)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		timer := time.NewTimer(testCase.SendSignalAfter)
+		defer timer.Stop()
+
+		select {
+		case <-timer.C:
+			// Signal the monitor; timeout is responsible for forwarding to children.
+			_ = process.Signal(sig)
+		case <-ctx.Done():
+		}
+	}()
+
+	return cancel
 }
 
 func runTestCase(t *testing.T, pathTimeoutBin string, timeout time.Duration, testCase Case) {
@@ -305,7 +446,13 @@ func runTestCase(t *testing.T, pathTimeoutBin string, timeout time.Duration, tes
 		cmd.Env = append(cmd.Env, name+"="+value)
 	}
 
-	err := cmd.Run()
+	err := cmd.Start()
+	require.NoError(t, err, "failed to start timeout command")
+
+	cancelCaseSignal := scheduleCaseSignal(t, cmd.Process, testCase)
+	err = cmd.Wait()
+
+	cancelCaseSignal()
 
 	require.NoError(t, ctx.Err(), "test case timed out after %s", timeout)
 
@@ -351,4 +498,36 @@ func runTestScenario(t *testing.T, pathTimeoutBin string, suite *Suite) {
 			})
 		}
 	})
+}
+
+func validateCaseSignalConfig(testCase Case) error {
+	hasSignal := strings.TrimSpace(testCase.SendSignal) != ""
+	hasDelay := testCase.SendSignalAfter > 0
+
+	switch {
+	case !hasSignal && !hasDelay:
+		return nil
+	case hasSignal && !hasDelay:
+		return errCaseSignalAfterRequired
+	case !hasSignal && hasDelay:
+		return errCaseSignalRequired
+	}
+
+	_, err := parseCaseSignal(testCase.SendSignal)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateTestScenario(suite *Suite) error {
+	for _, testCase := range suite.Cases {
+		err := validateCaseSignalConfig(testCase)
+		if err != nil {
+			return fmt.Errorf("case %q: %w", testCase.Name, err)
+		}
+	}
+
+	return nil
 }

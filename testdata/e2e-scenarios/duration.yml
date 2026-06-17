@@ -2,6 +2,24 @@ name: duration
 timeout: 10s
 
 cases:
+  - name: no suffix means seconds
+    args: ["1", "printf", "ok"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "ok"
+      stderr:
+        equals: ""
+  - name: seconds suffix is accepted
+    args: ["1s", "printf", "ok"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "ok"
+      stderr:
+        equals: ""
   - name: fractional seconds allow quick command
     args: ["0.5s", "printf", "ok"]
     stdin: ""
@@ -20,8 +38,53 @@ cases:
         equals: "ok"
       stderr:
         equals: ""
+  - name: minute suffix is accepted
+    args: ["1m", "printf", "ok"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "ok"
+      stderr:
+        equals: ""
+  - name: hour suffix is accepted
+    args: ["1h", "printf", "ok"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "ok"
+      stderr:
+        equals: ""
+  - name: day suffix is accepted
+    args: ["1d", "printf", "ok"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "ok"
+      stderr:
+        equals: ""
   - name: invalid duration
     args: ["1ms", "true"]
+    stdin: ""
+    want:
+      exit_code: 125
+      stdout:
+        equals: ""
+      stderr:
+        contains: ["invalid duration"]
+  - name: negative duration after option terminator
+    args: ["--", "-1", "true"]
+    stdin: ""
+    want:
+      exit_code: 125
+      stdout:
+        equals: ""
+      stderr:
+        contains: ["invalid duration"]
+  - name: malformed duration
+    args: ["1sec", "true"]
     stdin: ""
     want:
       exit_code: 125

@@ -29,6 +29,42 @@ cases:
         equals: ""
       stderr:
         contains: ["unrecognized option"]
+  - name: missing short kill-after argument
+    args: ["-k"]
+    stdin: ""
+    want:
+      exit_code: 125
+      stdout:
+        equals: ""
+      stderr:
+        contains: ["option requires an argument"]
+  - name: missing long kill-after argument
+    args: ["--kill-after"]
+    stdin: ""
+    want:
+      exit_code: 125
+      stdout:
+        equals: ""
+      stderr:
+        contains: ["option requires an argument"]
+  - name: missing short signal argument
+    args: ["-s"]
+    stdin: ""
+    want:
+      exit_code: 125
+      stdout:
+        equals: ""
+      stderr:
+        contains: ["option requires an argument"]
+  - name: missing long signal argument
+    args: ["--signal"]
+    stdin: ""
+    want:
+      exit_code: 125
+      stdout:
+        equals: ""
+      stderr:
+        contains: ["option requires an argument"]
   - name: option parsing stops at duration
     args: ["0", "sh", "-c", "printf %s \"$1\"", "sh", "--help"]
     stdin: ""

@@ -56,3 +56,12 @@ cases:
         equals: ""
       stderr:
         contains: ["failed to run command"]
+  - name: command cannot be invoked
+    args: ["0", "/"]
+    stdin: ""
+    want:
+      exit_code: 126
+      stdout:
+        equals: ""
+      stderr:
+        contains: ["failed to run command"]

@@ -20,6 +20,33 @@ cases:
         equals: "ok"
       stderr:
         equals: ""
+  - name: numeric signal is accepted
+    args: ["--signal=15", "0.5s", "printf", "ok"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "ok"
+      stderr:
+        equals: ""
+  - name: short attached signal is accepted
+    args: ["-sTERM", "0.5s", "printf", "ok"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "ok"
+      stderr:
+        equals: ""
+  - name: long separated signal is accepted
+    args: ["--signal", "TERM", "0.5s", "printf", "ok"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "ok"
+      stderr:
+        equals: ""
   - name: invalid signal
     args: ["--signal=NOPE", "1s", "true"]
     stdin: ""

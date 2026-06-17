@@ -2,6 +2,42 @@ name: kill after
 timeout: 10s
 
 cases:
+  - name: short attached option accepts zero
+    args: ["-k0", "1s", "printf", "ok"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "ok"
+      stderr:
+        equals: ""
+  - name: short separated option accepts zero
+    args: ["-k", "0", "1s", "printf", "ok"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "ok"
+      stderr:
+        equals: ""
+  - name: long separated option accepts zero
+    args: ["--kill-after", "0", "1s", "printf", "ok"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "ok"
+      stderr:
+        equals: ""
+  - name: long equals option accepts zero
+    args: ["--kill-after=0", "1s", "printf", "ok"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "ok"
+      stderr:
+        equals: ""
   - name: non foreground kill may kill monitor
     args: ["--kill-after=0.1s", "0.1s", "sh", "-c", "trap '' TERM; while true; do :; done"]
     stdin: ""

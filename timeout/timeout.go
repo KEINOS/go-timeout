@@ -372,7 +372,10 @@ func classifyStartError(err error) int {
 		return ExitNotFound
 	}
 
-	if errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.ENOEXEC) {
+	// Found-but-not-invokable command errors map to GNU timeout's 126 status.
+	if errors.Is(err, os.ErrPermission) ||
+		errors.Is(err, syscall.ENOEXEC) ||
+		errors.Is(err, syscall.EISDIR) {
 		return ExitCannotInvoke
 	}
 

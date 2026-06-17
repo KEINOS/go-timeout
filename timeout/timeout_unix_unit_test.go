@@ -1234,6 +1234,11 @@ var classifyStartErrorTestCases = []classifyStartErrorTestCase{
 		want: ExitCannotInvoke,
 	},
 	{
+		name: "is directory",
+		err:  syscall.EISDIR,
+		want: ExitCannotInvoke,
+	},
+	{
 		name: "other",
 		err:  errTestStartFailure,
 		want: ExitInternalFailure,

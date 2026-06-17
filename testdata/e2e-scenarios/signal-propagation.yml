@@ -1,0 +1,53 @@
+name: signal propagation
+timeout: 10s
+
+cases:
+  - name: forwards external term to command
+    args:
+      - "5s"
+      - "sh"
+      - "-c"
+      - "trap 'printf \"%s\\n\" child-term; exit 42' TERM; while :; do sleep 1; done"
+    send_signal: TERM
+    # Give the monitor enough time to install its signal handlers.
+    send_signal_after: 500ms
+    stdin: ""
+    want:
+      exit_code: 42
+      stdout:
+        equals: "child-term\n"
+  - name: verbose reports propagated signal
+    args:
+      - "--verbose"
+      - "5s"
+      - "sh"
+      - "-c"
+      - "trap 'printf \"%s\\n\" child-term; exit 0' TERM; while :; do sleep 1; done"
+    send_signal: TERM
+    # Give the monitor enough time to install its signal handlers.
+    send_signal_after: 500ms
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        equals: "child-term\n"
+      stderr:
+        contains: ["sending signal TERM", "sh"]
+  - name: external signal starts kill-after timer
+    args:
+      - "--foreground"
+      - "--kill-after=0.1s"
+      - "5s"
+      - "sh"
+      - "-c"
+      - "trap '' TERM; while :; do :; done"
+    send_signal: TERM
+    # Give the monitor enough time to install its signal handlers.
+    send_signal_after: 500ms
+    stdin: ""
+    want:
+      exit_code: 137
+      stdout:
+        equals: ""
+      stderr:
+        equals: ""

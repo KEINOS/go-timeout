@@ -1,0 +1,16 @@
+name: process group
+timeout: 10s
+
+cases:
+  - name: default mode signals process group descendants
+    args:
+      - "0.1s"
+      - "sh"
+      - "-c"
+      - >-
+        trap 'printf "%s\n" parent-term; wait; exit 0' TERM; (trap 'printf "%s\n" child-term; exit 0' TERM; while :; do sleep 1; done) & wait
+    stdin: ""
+    want:
+      exit_code: 124
+      stdout:
+        contains: ["parent-term", "child-term"]
