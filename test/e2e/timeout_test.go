@@ -45,6 +45,11 @@ var (
 	errCaseSignalAfterRequired = errors.New("send_signal_after is required when send_signal is set")
 	errCaseSignalRequired      = errors.New("send_signal is required when send_signal_after is set")
 	errUnsupportedCaseSignal   = errors.New("unsupported signal")
+	errSuiteNameRequired       = errors.New("suite name is required")
+	errSuiteCasesRequired      = errors.New("suite must contain at least one case")
+	errCaseNameRequired        = errors.New("case name is required")
+	errCaseWantRequired        = errors.New("case want is required")
+	errCaseExitCodeRequired    = errors.New("case want.exit_code is required")
 )
 
 // ============================================================================
@@ -212,6 +217,125 @@ cases:
 	require.Equal(t, 10*time.Millisecond, suite.Cases[0].SendSignalAfter)
 }
 
+func Test_decodeTestScenarioRejectsInvalidSuiteSemantics(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{
+			name: "empty suite name",
+			data: []byte(`
+name: ""
+cases:
+  - name: show help
+    args: ["--help"]
+    want:
+      exit_code: 0
+`),
+			want: errSuiteNameRequired.Error(),
+		},
+		{
+			name: "empty cases",
+			data: []byte(`
+name: help
+cases: []
+`),
+			want: errSuiteCasesRequired.Error(),
+		},
+		{
+			name: "empty case name",
+			data: []byte(`
+name: help
+cases:
+  - name: ""
+    args: ["--help"]
+    want:
+      exit_code: 0
+`),
+			want: errCaseNameRequired.Error(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := decodeTestScenario(tt.data)
+
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+}
+
+func Test_decodeTestScenarioRejectsMissingWantOrExitCode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{
+			name: "missing want",
+			data: []byte(`
+name: help
+cases:
+  - name: show help
+    args: ["--help"]
+`),
+			want: errCaseWantRequired.Error(),
+		},
+		{
+			name: "missing exit_code",
+			data: []byte(`
+name: help
+cases:
+  - name: show help
+    args: ["--help"]
+    want:
+      stdout:
+        contains: ["Usage:"]
+`),
+			want: errCaseExitCodeRequired.Error(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := decodeTestScenario(tt.data)
+
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+}
+
+func Test_decodeTestScenarioAcceptsExplicitExitCode(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`
+name: help
+cases:
+  - name: show help
+    args: ["--help"]
+    want:
+      exit_code: 0
+      stdout:
+        contains: ["Usage:"]
+`)
+
+	suite, err := decodeTestScenario(data)
+
+	require.NoError(t, err)
+	require.Len(t, suite.Cases, 1)
+	require.NotNil(t, suite.Cases[0].Want.ExitCode)
+	require.Equal(t, 0, *suite.Cases[0].Want.ExitCode)
+}
+
 // ============================================================================
 //  Setup Section
 // ============================================================================
@@ -235,13 +359,13 @@ type Case struct {
 	Env             map[string]string `yaml:"env"`
 	SendSignal      string            `yaml:"send_signal"`
 	SendSignalAfter time.Duration     `yaml:"send_signal_after"`
-	Want            Want              `yaml:"want"`
+	Want            *Want             `yaml:"want"`
 }
 
 // Want represents the expected outcomes of a test case, including exit code and
 // assertions for stdout and stderr.
 type Want struct {
-	ExitCode int        `yaml:"exit_code"`
+	ExitCode *int       `yaml:"exit_code"`
 	Stdout   TextAssert `yaml:"stdout"`
 	Stderr   TextAssert `yaml:"stderr"`
 }
@@ -470,7 +594,9 @@ func runTestCase(t *testing.T, pathTimeoutBin string, timeout time.Duration, tes
 		}
 	}
 
-	assert.Equal(t, testCase.Want.ExitCode, exitCode, "exit code mismatch")
+	require.NotNil(t, testCase.Want, "test case should define want")
+	require.NotNil(t, testCase.Want.ExitCode, "test case should define want.exit_code")
+	assert.Equal(t, *testCase.Want.ExitCode, exitCode, "exit code mismatch")
 	assertText(t, "stdout", stdout.String(), testCase.Want.Stdout)
 	assertText(t, "stderr", stderr.String(), testCase.Want.Stderr)
 }
@@ -522,7 +648,27 @@ func validateCaseSignalConfig(testCase Case) error {
 }
 
 func validateTestScenario(suite *Suite) error {
+	if strings.TrimSpace(suite.Name) == "" {
+		return errSuiteNameRequired
+	}
+
+	if len(suite.Cases) == 0 {
+		return errSuiteCasesRequired
+	}
+
 	for _, testCase := range suite.Cases {
+		if strings.TrimSpace(testCase.Name) == "" {
+			return fmt.Errorf("case %q: %w", testCase.Name, errCaseNameRequired)
+		}
+
+		if testCase.Want == nil {
+			return fmt.Errorf("case %q: %w", testCase.Name, errCaseWantRequired)
+		}
+
+		if testCase.Want.ExitCode == nil {
+			return fmt.Errorf("case %q: %w", testCase.Name, errCaseExitCodeRequired)
+		}
+
 		err := validateCaseSignalConfig(testCase)
 		if err != nil {
 			return fmt.Errorf("case %q: %w", testCase.Name, err)
