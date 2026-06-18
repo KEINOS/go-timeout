@@ -26,7 +26,8 @@ tests, and a YAML-driven end-to-end harness.
 | `timeout/timeout_example_test.go` | Go example tests for public usage (portable) |
 | `cmd/timeout/main.go` | CLI entry point over `timeout.Run` |
 | `cmd/timeout/main_unit_test.go` | Tests for `main`, `run`, and `osExit` override |
-| `test/e2e/timeout_test.go` | YAML scenario-driven E2E harness |
+| `test/e2e/run_e2e_test.go` | YAML scenario-driven E2E runner and helpers |
+| `test/e2e/test_e2e_test.go` | Tests for the E2E scenario harness |
 | `testdata/e2e-scenarios/*.yml` | E2E behavior scenarios |
 | `Makefile` | Build, lint, and test orchestration |
 | `Dockerfile` | Multi-stage build and scratch image |
