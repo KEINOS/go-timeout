@@ -1,10 +1,7 @@
-/*
-Package timeout implements a GNU-compatible timeout command.
-*/
+// Package timeout provides a GNU-compatible timeout command.
 package timeout
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -22,15 +19,15 @@ import (
 )
 
 const (
-	// ExitSuccess is the exit code used for successful execution.
+	// ExitSuccess means the command completed successfully.
 	ExitSuccess = 0
-	// ExitTimedOut is the exit code used when the command times out.
+	// ExitTimedOut means the command timed out.
 	ExitTimedOut = 124
-	// ExitInternalFailure is the exit code used for timeout's own failures.
+	// ExitInternalFailure means timeout itself failed.
 	ExitInternalFailure = 125
-	// ExitCannotInvoke is the exit code used when a command cannot be invoked.
+	// ExitCannotInvoke means the command was found but could not run.
 	ExitCannotInvoke = 126
-	// ExitNotFound is the exit code used when a command cannot be found.
+	// ExitNotFound means the command was not found.
 	ExitNotFound = 127
 )
 
@@ -52,27 +49,10 @@ const (
 	optionVersion        = "--version"
 )
 
-// ErrUsage marks command-line usage errors.
+// ErrUsage identifies an invalid command-line argument.
 var ErrUsage = errors.New("usage error")
 
-// Test seams for external package calls that are hard to exercise directly.
-var debugReadBuildInfo = debug.ReadBuildInfo
-
-// signalIgnored reports whether sig was inherited with an ignored disposition.
-// It is a test seam so the propagation-signal filtering can be exercised without
-// mutating process-wide signal state.
-var signalIgnored = func(sig syscall.Signal) bool {
-	return signal.Ignored(sig)
-}
-
-// signalNotify wraps signal.Notify so notifySignals can be tested without
-// registering process-wide signal handlers.
-var signalNotify = func(channel chan<- os.Signal, signals ...os.Signal) {
-	signal.Notify(channel, signals...)
-}
-
-// basePropagationSignals are the terminating signals the monitor forwards to the
-// monitored command when the monitor itself receives one of them.
+// basePropagationSignals lists signals that timeout forwards to the command.
 var basePropagationSignals = []syscall.Signal{
 	syscall.SIGHUP,
 	syscall.SIGINT,
@@ -80,17 +60,32 @@ var basePropagationSignals = []syscall.Signal{
 	syscall.SIGTERM,
 }
 
-// exitErrorWaitStatus decodes the platform wait status from an exit error.
-// It is a test seam: on the supported platforms Sys() is always a
-// syscall.WaitStatus, so the non-WaitStatus fallback in waitExitCode is
-// otherwise unreachable.
-var exitErrorWaitStatus = func(exitErr *exec.ExitError) (syscall.WaitStatus, bool) {
-	status, ok := exitErr.Sys().(syscall.WaitStatus)
+// Mockable function variables for testing.
+var (
+	// debugReadBuildInfo can be replaced in tests.
+	debugReadBuildInfo = debug.ReadBuildInfo
 
-	return status, ok
-}
+	// exitErrorWaitStatus gets the platform status from an exit error.
+	// Tests can replace it to check the fallback in waitExitCode.
+	exitErrorWaitStatus = func(exitErr *exec.ExitError) (syscall.WaitStatus, bool) {
+		status, ok := exitErr.Sys().(syscall.WaitStatus)
 
-// Config contains parsed timeout options and operands.
+		return status, ok
+	}
+
+	// signalIgnored reports whether the process inherited sig as ignored.
+	// Tests can replace it without changing the process-wide signal state.
+	signalIgnored = func(sig syscall.Signal) bool {
+		return signal.Ignored(sig)
+	}
+
+	// signalNotify can be replaced in tests to avoid changing process-wide handlers.
+	signalNotify = func(channel chan<- os.Signal, signals ...os.Signal) {
+		signal.Notify(channel, signals...)
+	}
+)
+
+// Config contains the parsed options, duration, and command.
 type Config struct {
 	Command        []string
 	Duration       time.Duration
@@ -98,42 +93,54 @@ type Config struct {
 	Signal         syscall.Signal
 	Foreground     bool
 	PreserveStatus bool
-	Verbose        bool
 	ShowHelp       bool
 	ShowVersion    bool
+	Verbose        bool
 }
 
-// Streams contains standard streams used by Run.
+// Streams contains the input and output streams used by Run.
 type Streams struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
 }
 
-type lockedWriter struct {
-	mutex  *sync.Mutex
-	writer io.Writer
+/* Functions */
+
+// HelpText returns the help text for the timeout command.
+func HelpText() string {
+	return `Usage:
+  timeout [OPTION]... DURATION COMMAND [ARG]...
+
+timeout starts COMMAND, and kill it if still running after DURATION.
+
+Options:
+  -f, --foreground           keep COMMAND in the foreground
+  -h, --help                 display this help and exit
+  -k, --kill-after=DURATION  send KILL if COMMAND is still running later
+  -p, --preserve-status      preserve COMMAND status after timeout
+  -s, --signal=SIGNAL        specify signal to send on timeout
+  -v, --verbose              diagnose sent signals
+      --version              output version information and exit
+
+Note:
+  By default, timeout sends the TERM signal upon timeout. Use --signal
+  to specify a different signal, or use --kill-after to send KILL if
+  the command does not terminate after the initial signal.
+
+Examples:
+  # Sends SIGTERM after 5 seconds
+  timeout 5s sleep 10
+
+  # Sends SIGKILL after 5 seconds
+  timeout --signal=KILL 5s long-running-command
+
+  # Sends SIGTERM after 5 seconds, then SIGKILL after 2 more seconds
+  timeout --kill-after=2s 5s command-that-may-ignore-term
+`
 }
 
-type processSignalFunc func(*exec.Cmd, syscall.Signal)
-
-// runnerState holds the per-run monitor state. The embedded platformState
-// carries the platform's signal-delivery seams: every platform injects a
-// process signaler, and Unix additionally injects a process-group signaler.
-type runnerState struct {
-	platformState
-
-	streams    Streams
-	suppressBy time.Time
-	config     Config
-	pgid       int
-	suppressed syscall.Signal
-	timedOut   bool
-	killSent   bool
-	signalSent bool
-}
-
-// Parse parses timeout command-line arguments.
+// Parse reads timeout command-line arguments and returns their configuration.
 func Parse(args []string) (Config, error) {
 	config := new(Config)
 	config.Signal = syscall.SIGTERM
@@ -167,7 +174,7 @@ func Parse(args []string) (Config, error) {
 	return *config, nil
 }
 
-// ParseDuration parses GNU timeout duration syntax.
+// ParseDuration reads a duration in GNU timeout format.
 func ParseDuration(value string) (time.Duration, error) {
 	if value == "" {
 		return 0, usageError("empty duration")
@@ -199,36 +206,7 @@ func ParseDuration(value string) (time.Duration, error) {
 	return time.Duration(nanoseconds), nil
 }
 
-func splitDuration(value string) (string, time.Duration, error) {
-	lastRune := rune(value[len(value)-1])
-	if !unicode.IsLetter(lastRune) {
-		return value, time.Second, nil
-	}
-
-	multiplier, err := durationMultiplier(lastRune)
-	if err != nil {
-		return "", 0, err
-	}
-
-	return value[:len(value)-1], multiplier, nil
-}
-
-func durationMultiplier(suffix rune) (time.Duration, error) {
-	switch suffix {
-	case 's':
-		return time.Second, nil
-	case 'm':
-		return time.Minute, nil
-	case 'h':
-		return time.Hour, nil
-	case 'd':
-		return hoursPerDay * time.Hour, nil
-	default:
-		return 0, usageError("invalid duration suffix")
-	}
-}
-
-// ParseSignal parses a signal name, SIG-prefixed name, or signal number.
+// ParseSignal reads a signal name, a SIG-prefixed name, or a signal number.
 func ParseSignal(value string) (syscall.Signal, error) {
 	if value == "" {
 		return 0, usageError("empty signal")
@@ -259,13 +237,14 @@ func ParseSignal(value string) (syscall.Signal, error) {
 	return parsed, nil
 }
 
-// Run runs timeout with the given arguments and streams and returns an exit code.
+// Run runs timeout with the given arguments and streams.
+// It returns the command's exit code or a timeout exit code.
 func Run(args []string, streams Streams) int {
 	streams = fillDefaultStreams(streams)
 
 	config, err := Parse(args)
 	if err != nil {
-		_, _ = fmt.Fprintf(streams.Stderr, "timeout: %v\n", err)
+		printUsageError(streams.Stderr, err)
 
 		return ExitInternalFailure
 	}
@@ -289,181 +268,73 @@ func Run(args []string, streams Streams) int {
 	return state.runCommand()
 }
 
-// HelpText returns the command help text.
-func HelpText() string {
-	return `Usage: timeout [OPTION]... DURATION COMMAND [ARG]...
-Start COMMAND, and kill it if still running after DURATION.
+/* Helper/Private functions */
 
-Options:
-  -f, --foreground          keep COMMAND in the foreground
-  -k, --kill-after=DURATION send KILL if COMMAND is still running later
-  -p, --preserve-status     preserve COMMAND status after timeout
-  -s, --signal=SIGNAL       specify signal to send on timeout
-  -v, --verbose             diagnose sent signals
-      --help                display this help and exit
-      --version             output version information and exit
-`
+type lockedWriter struct {
+	mutex  *sync.Mutex
+	writer io.Writer
 }
 
-// runCommand starts the user command as a child process. Platform-specific
-// setup (such as the Unix background process group that lets timeout signal the
-// whole command) is handled by setupProcessGroup.
-func (state *runnerState) runCommand() int {
-	if code, ok := state.setupProcessGroup(); !ok {
-		return code
-	}
+func (writer lockedWriter) Write(data []byte) (int, error) {
+	writer.mutex.Lock()
+	defer writer.mutex.Unlock()
 
-	state.protectFromJobControlStop()
-	defer state.releaseJobControlProtection()
-
-	//nolint:gosec // Running the requested command is the purpose of this package.
-	cmd := exec.CommandContext(context.Background(), state.config.Command[0], state.config.Command[1:]...)
-	cmd.Stdin = state.streams.Stdin
-	cmd.Stdout = state.streams.Stdout
-	cmd.Stderr = state.streams.Stderr
-
-	err := cmd.Start()
+	written, err := writer.writer.Write(data)
 	if err != nil {
-		return state.startErrorExitCode(err)
+		return written, fmt.Errorf("write stream: %w", err)
 	}
 
-	return state.waitForCommand(cmd)
+	return written, nil
 }
 
-func (state *runnerState) waitForCommand(cmd *exec.Cmd) int {
-	done := make(chan error, 1)
-	go func() {
-		done <- cmd.Wait()
-	}()
-
-	initialTimer := newTimer(state.config.Duration)
-	killTimer := newStoppedTimer()
-
-	defer stopTimer(initialTimer)
-	defer stopTimer(killTimer)
-
-	signalCh := make(chan os.Signal, 1)
-	notifySignals(signalCh, state.config.Signal)
-
-	defer signal.Stop(signalCh)
-
-	for {
-		select {
-		case err := <-done:
-			return state.timeoutExitCode(err)
-		case <-initialTimer.C:
-			state.timedOut = true
-			state.sendSignal(cmd, state.config.Signal)
-			state.startKillTimer(killTimer)
-		case <-killTimer.C:
-			state.killSent = true
-			state.sendSignal(cmd, syscall.SIGKILL)
-		case received := <-signalCh:
-			state.forwardSignal(cmd, received, killTimer)
+func appendSignalIfMissing(signals []os.Signal, sig syscall.Signal) []os.Signal {
+	for _, existing := range signals {
+		if existing == sig {
+			return signals
 		}
 	}
+
+	return append(signals, sig)
 }
 
-func (state *runnerState) sendSignal(cmd *exec.Cmd, sig syscall.Signal) {
-	state.signalSent = true
+// buildPropagationSignals returns the signals that timeout should forward.
+//
+// It skips inherited ignored signals, but always includes the timeout signal
+// when one is set. It also removes duplicate signals.
+func buildPropagationSignals(
+	timeoutSignal syscall.Signal,
+	isIgnored func(syscall.Signal) bool,
+) []os.Signal {
+	signals := make([]os.Signal, 0, len(basePropagationSignals)+1)
 
-	if state.config.Verbose {
-		_, _ = fmt.Fprintf(state.streams.Stderr, "timeout: sending signal %s to command %s\n",
-			signalName(sig), state.config.Command[0])
+	for _, sig := range basePropagationSignals {
+		if sig != timeoutSignal && isIgnored(sig) {
+			continue
+		}
+
+		signals = appendSignalIfMissing(signals, sig)
 	}
 
-	state.deliverSignal(cmd, sig)
+	if timeoutSignal != 0 {
+		signals = appendSignalIfMissing(signals, timeoutSignal)
+	}
+
+	return signals
 }
 
-func (state *runnerState) sendProcessSignal(cmd *exec.Cmd, sig syscall.Signal) {
-	signalProcess := state.signalProcess
-	if signalProcess == nil {
-		signalProcess = defaultProcessSignal
+func durationMultiplier(suffix rune) (time.Duration, error) {
+	switch suffix {
+	case 's':
+		return time.Second, nil
+	case 'm':
+		return time.Minute, nil
+	case 'h':
+		return time.Hour, nil
+	case 'd':
+		return hoursPerDay * time.Hour, nil
+	default:
+		return 0, usageError("invalid duration suffix")
 	}
-
-	signalProcess(cmd, sig)
-}
-
-func (state *runnerState) startErrorExitCode(err error) int {
-	exitCode := classifyStartError(err)
-
-	_, _ = fmt.Fprintf(state.streams.Stderr, "timeout: failed to run command %q: %v\n", state.config.Command[0], err)
-
-	return exitCode
-}
-
-func classifyStartError(err error) int {
-	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
-		return ExitNotFound
-	}
-
-	// Found-but-not-invokable command errors map to GNU timeout's 126 status.
-	if errors.Is(err, os.ErrPermission) ||
-		errors.Is(err, syscall.ENOEXEC) ||
-		errors.Is(err, syscall.EISDIR) {
-		return ExitCannotInvoke
-	}
-
-	return ExitInternalFailure
-}
-
-func (state *runnerState) shouldSuppress(sig syscall.Signal) bool {
-	// Process-group signaling can echo the monitor's own signal back to the
-	// monitor. Suppress only a short same-signal window: long enough to avoid a
-	// self-signal loop, but intentionally small so a later external signal is
-	// still propagated.
-	if state.suppressed != sig {
-		return false
-	}
-
-	if time.Now().After(state.suppressBy) {
-		state.suppressed = 0
-
-		return false
-	}
-
-	return true
-}
-
-func (state *runnerState) startKillTimer(timer *time.Timer) {
-	if state.killSent || state.config.KillAfter == 0 {
-		return
-	}
-
-	resetTimer(timer, state.config.KillAfter)
-}
-
-func (state *runnerState) timeoutExitCode(err error) int {
-	exitCode := state.waitExitCode(err)
-	if state.timedOut && !state.config.PreserveStatus && exitCode != signalExitCode(syscall.SIGKILL) {
-		return ExitTimedOut
-	}
-
-	return exitCode
-}
-
-func (state *runnerState) waitExitCode(err error) int {
-	if err == nil {
-		return ExitSuccess
-	}
-
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
-		_, _ = fmt.Fprintf(state.streams.Stderr, "timeout: wait for command: %v\n", err)
-
-		return ExitInternalFailure
-	}
-
-	status, ok := exitErrorWaitStatus(exitErr)
-	if !ok {
-		return exitErr.ExitCode()
-	}
-
-	if status.Signaled() {
-		return signalExitCode(status.Signal())
-	}
-
-	return status.ExitStatus()
 }
 
 func fillDefaultStreams(streams Streams) Streams {
@@ -491,34 +362,12 @@ func fillDefaultStreams(streams Streams) Streams {
 	return streams
 }
 
-func (state *runnerState) forwardSignal(cmd *exec.Cmd, received os.Signal, killTimer *time.Timer) {
-	sig, ok := received.(syscall.Signal)
-	if !ok {
-		return
-	}
-
-	if state.shouldSuppress(sig) {
-		return
-	}
-
-	state.sendSignal(cmd, sig)
-	state.startKillTimer(killTimer)
-}
-
 func getAppVersion() string {
 	return versionFromBuildInfo(debugReadBuildInfo())
 }
 
-func (writer lockedWriter) Write(data []byte) (int, error) {
-	writer.mutex.Lock()
-	defer writer.mutex.Unlock()
-
-	written, err := writer.writer.Write(data)
-	if err != nil {
-		return written, fmt.Errorf("write stream: %w", err)
-	}
-
-	return written, nil
+func isOperandStart(arg string) bool {
+	return arg == "-" || !strings.HasPrefix(arg, "-")
 }
 
 func isPositiveFloatOverflow(err error, value float64) bool {
@@ -528,35 +377,6 @@ func isPositiveFloatOverflow(err error, value float64) bool {
 	}
 
 	return errors.Is(numberError.Err, strconv.ErrRange) && math.IsInf(value, 1)
-}
-
-func parseDurationNumber(number string) (float64, error) {
-	parsed, err := strconv.ParseFloat(number, 64)
-	if err != nil && !isPositiveFloatOverflow(err, parsed) {
-		return 0, fmt.Errorf("parse duration number: %w", err)
-	}
-
-	if math.IsNaN(parsed) {
-		return 0, usageError("invalid duration number")
-	}
-
-	return parsed, nil
-}
-
-func defaultProcessSignal(cmd *exec.Cmd, sig syscall.Signal) {
-	// GNU timeout treats signal delivery as best effort; the command may have
-	// already exited by the time the signal is sent.
-	_ = cmd.Process.Signal(sig)
-}
-
-func appendSignalIfMissing(signals []os.Signal, sig syscall.Signal) []os.Signal {
-	for _, existing := range signals {
-		if existing == sig {
-			return signals
-		}
-	}
-
-	return append(signals, sig)
 }
 
 func isSupportedSignal(sig syscall.Signal) bool {
@@ -570,9 +390,8 @@ func isSupportedSignal(sig syscall.Signal) bool {
 }
 
 func newStoppedTimer() *time.Timer {
-	// The timer is created far enough in the future that it cannot fire before
-	// Stop, so Stop always succeeds. Under Go 1.23+ timer semantics Stop also
-	// guarantees the channel is drained, so no explicit receive is needed.
+	// Stop the timer before it can fire. In Go 1.23 and later, Stop also makes
+	// sure that no timer value remains in the channel.
 	timer := time.NewTimer(time.Hour)
 	timer.Stop()
 
@@ -596,32 +415,94 @@ func notifySignals(signalCh chan<- os.Signal, timeoutSignal syscall.Signal) {
 	signalNotify(signalCh, signals...)
 }
 
-// buildPropagationSignals builds the set of signals the monitor registers for
-// propagation. A base propagation signal is excluded when isIgnored reports it
-// was inherited as ignored, except for the selected timeout signal, which is
-// always included when non-zero. GNU timeout skips handlers for signals
-// inherited as ignored so background jobs keep their conventional
-// SIGINT/SIGQUIT-ignored behavior, while the selected timeout signal must still
-// be handled even if it was inherited ignored. Duplicates are collapsed.
-func buildPropagationSignals(
-	timeoutSignal syscall.Signal,
-	isIgnored func(syscall.Signal) bool,
-) []os.Signal {
-	signals := make([]os.Signal, 0, len(basePropagationSignals)+1)
+func parseDurationNumber(number string) (float64, error) {
+	parsed, err := strconv.ParseFloat(number, 64)
+	if err != nil && !isPositiveFloatOverflow(err, parsed) {
+		return 0, fmt.Errorf("parse duration number: %w", err)
+	}
 
-	for _, sig := range basePropagationSignals {
-		if sig != timeoutSignal && isIgnored(sig) {
-			continue
+	if math.IsNaN(parsed) {
+		return 0, usageError("invalid duration number")
+	}
+
+	return parsed, nil
+}
+
+func parseKillAfter(config *Config, value string) error {
+	duration, err := ParseDuration(value)
+	if err != nil {
+		return fmt.Errorf("invalid kill-after duration %q: %w", value, err)
+	}
+
+	config.KillAfter = duration
+
+	return nil
+}
+
+func parseLongFlag(config *Config, arg string) bool {
+	switch arg {
+	case optionForeground:
+		config.Foreground = true
+	case optionPreserveStatus:
+		config.PreserveStatus = true
+	case optionVerbose:
+		config.Verbose = true
+	case optionHelp:
+		config.ShowHelp = true
+	case optionVersion:
+		config.ShowVersion = true
+	default:
+		return false
+	}
+
+	return true
+}
+
+func parseLongOption(config *Config, args []string, index int) (int, error) {
+	arg := args[index]
+
+	if parseLongFlag(config, arg) {
+		return index + 1, nil
+	}
+
+	if value, ok := strings.CutPrefix(arg, optionKillAfter+"="); ok {
+		return index + 1, parseKillAfter(config, value)
+	}
+
+	if value, ok := strings.CutPrefix(arg, optionSignal+"="); ok {
+		return index + 1, parseSignalOption(config, value)
+	}
+
+	return parseLongOptionArgument(config, args, index)
+}
+
+func parseLongOptionArgument(config *Config, args []string, index int) (int, error) {
+	switch args[index] {
+	case optionKillAfter:
+		value, nextIndex, err := requireOptionArgument(args, index, optionKillAfter)
+		if err != nil {
+			return 0, err
 		}
 
-		signals = appendSignalIfMissing(signals, sig)
+		return nextIndex, parseKillAfter(config, value)
+	case optionSignal:
+		value, nextIndex, err := requireOptionArgument(args, index, optionSignal)
+		if err != nil {
+			return 0, err
+		}
+
+		return nextIndex, parseSignalOption(config, value)
+	default:
+		return 0, usageError("unrecognized option " + args[index])
+	}
+}
+
+func parseOption(config *Config, args []string, index int) (int, error) {
+	if strings.HasPrefix(args[index], "--") {
+		return parseLongOption(config, args, index)
 	}
 
-	if timeoutSignal != 0 {
-		signals = appendSignalIfMissing(signals, timeoutSignal)
-	}
-
-	return signals
+	return parseShortOptions(config, args, index)
 }
 
 func parseOptions(config *Config, args []string) (int, error) {
@@ -647,98 +528,12 @@ func parseOptions(config *Config, args []string) (int, error) {
 	return index, nil
 }
 
-func shouldExitAfterParsing(config *Config) bool {
-	return config.ShowHelp || config.ShowVersion
-}
-
-func parseOption(config *Config, args []string, index int) (int, error) {
-	if strings.HasPrefix(args[index], "--") {
-		return parseLongOption(config, args, index)
-	}
-
-	return parseShortOptions(config, args, index)
-}
-
-func isOperandStart(arg string) bool {
-	return arg == "-" || !strings.HasPrefix(arg, "-")
-}
-
-func parseLongOption(config *Config, args []string, index int) (int, error) {
-	arg := args[index]
-
-	if parseLongFlag(config, arg) {
-		return index + 1, nil
-	}
-
-	if value, ok := strings.CutPrefix(arg, optionKillAfter+"="); ok {
-		return index + 1, parseKillAfter(config, value)
-	}
-
-	if value, ok := strings.CutPrefix(arg, optionSignal+"="); ok {
-		return index + 1, parseSignalOption(config, value)
-	}
-
-	return parseLongOptionArgument(config, args, index)
-}
-
-func parseLongFlag(config *Config, arg string) bool {
-	switch arg {
-	case optionForeground:
-		config.Foreground = true
-	case optionPreserveStatus:
-		config.PreserveStatus = true
-	case optionVerbose:
-		config.Verbose = true
-	case optionHelp:
-		config.ShowHelp = true
-	case optionVersion:
-		config.ShowVersion = true
-	default:
-		return false
-	}
-
-	return true
-}
-
-func parseLongOptionArgument(config *Config, args []string, index int) (int, error) {
-	switch args[index] {
-	case optionKillAfter:
-		value, nextIndex, err := requireOptionArgument(args, index, optionKillAfter)
-		if err != nil {
-			return 0, err
-		}
-
-		return nextIndex, parseKillAfter(config, value)
-	case optionSignal:
-		value, nextIndex, err := requireOptionArgument(args, index, optionSignal)
-		if err != nil {
-			return 0, err
-		}
-
-		return nextIndex, parseSignalOption(config, value)
-	default:
-		return 0, usageError("unrecognized option " + args[index])
-	}
-}
-
-func parseShortOptions(config *Config, args []string, index int) (int, error) {
-	arg := args[index]
-
-	for offset := 1; offset < len(arg); offset++ {
-		if parseShortFlag(config, arg[offset]) {
-			continue
-		}
-
-		return parseShortOptionArgument(config, args, index, offset)
-	}
-
-	return index + 1, nil
-}
-
 func parseShortFlag(config *Config, option byte) bool {
 	switch option {
 	case 'f':
 		config.Foreground = true
+	case 'h':
+		config.ShowHelp = true
 	case 'p':
 		config.PreserveStatus = true
 	case 'v':
@@ -764,6 +559,20 @@ func parseShortOptionArgument(config *Config, args []string, index int, offset i
 	}
 }
 
+func parseShortOptions(config *Config, args []string, index int) (int, error) {
+	arg := args[index]
+
+	for offset := 1; offset < len(arg); offset++ {
+		if parseShortFlag(config, arg[offset]) {
+			continue
+		}
+
+		return parseShortOptionArgument(config, args, index, offset)
+	}
+
+	return index + 1, nil
+}
+
 func parseShortOptionValue(
 	config *Config,
 	args []string,
@@ -784,17 +593,6 @@ func parseShortOptionValue(
 	return nextIndex, parseValue(config, nextValue)
 }
 
-func parseKillAfter(config *Config, value string) error {
-	duration, err := ParseDuration(value)
-	if err != nil {
-		return fmt.Errorf("invalid kill-after duration %q: %w", value, err)
-	}
-
-	config.KillAfter = duration
-
-	return nil
-}
-
 func parseSignalOption(config *Config, value string) error {
 	parsed, err := ParseSignal(value)
 	if err != nil {
@@ -804,6 +602,11 @@ func parseSignalOption(config *Config, value string) error {
 	config.Signal = parsed
 
 	return nil
+}
+
+func printUsageError(stderr io.Writer, err error) {
+	_, _ = fmt.Fprintf(stderr, "error timeout: %v\n", err)
+	_, _ = fmt.Fprintf(stderr, "\n%s", HelpText())
 }
 
 func requireOptionArgument(args []string, index int, option string) (string, int, error) {
@@ -825,6 +628,10 @@ func resetTimer(timer *time.Timer, duration time.Duration) {
 	timer.Reset(duration)
 }
 
+func shouldExitAfterParsing(config *Config) bool {
+	return config.ShowHelp || config.ShowVersion
+}
+
 func signalExitCode(sig syscall.Signal) int {
 	return signalExitCodeBase + int(sig)
 }
@@ -837,6 +644,20 @@ func signalName(sig syscall.Signal) string {
 	}
 
 	return sig.String()
+}
+
+func splitDuration(value string) (string, time.Duration, error) {
+	lastRune := rune(value[len(value)-1])
+	if !unicode.IsLetter(lastRune) {
+		return value, time.Second, nil
+	}
+
+	multiplier, err := durationMultiplier(lastRune)
+	if err != nil {
+		return "", 0, err
+	}
+
+	return value[:len(value)-1], multiplier, nil
 }
 
 func stopTimer(timer *time.Timer) {

@@ -12,32 +12,25 @@ import (
 	"time"
 )
 
-// signalSuppressionDuration bounds the window during which the monitor ignores
-// an echo of its own process-group signal. See shouldSuppress.
+// signalSuppressionDuration is how long timeout ignores its echoed group signal.
 const signalSuppressionDuration = 200 * time.Millisecond
 
-// groupSignalFunc is the signature for process-group signal delivery. It is a
-// test seam and exists only on Unix-like systems; Windows lacks POSIX process
-// groups.
+// groupSignalFunc sends a signal to a Unix process group.
 type groupSignalFunc func(int, syscall.Signal)
 
-// platformState carries the Unix signal-delivery seams: the per-process
-// signaler shared by all platforms plus the Unix-only process-group signaler.
-// jobControlCh keeps the SIGTTIN/SIGTTOU notification alive for the run so the
-// monitor is not stopped by a background child's TTY access.
+// platformState stores Unix-specific signal handling.
+// jobControlCh keeps job-control protection active while the command runs.
 type platformState struct {
 	signalProcess processSignalFunc
 	signalGroup   groupSignalFunc
 	jobControlCh  chan os.Signal
 }
 
-// Test seams for external package calls that are hard to exercise directly.
+// These functions can be replaced in tests.
 var syscallGetpgid = syscall.Getpgid
 var syscallSetpgid = syscall.Setpgid
 
-// jobControlNotify and jobControlStop wrap the os/signal calls that protect the
-// monitor from SIGTTIN/SIGTTOU. They are test seams so the activation and
-// cleanup can be exercised without mutating process-wide signal state.
+// These functions can be replaced in tests to avoid changing signal handlers.
 var jobControlNotify = func(channel chan<- os.Signal, signals ...os.Signal) {
 	signal.Notify(channel, signals...)
 }
@@ -45,7 +38,7 @@ var jobControlStop = func(channel chan<- os.Signal) {
 	signal.Stop(channel)
 }
 
-// supportedSignals is the full GNU-compatible signal table on Unix.
+// supportedSignals lists the GNU-compatible signals available on Unix.
 var supportedSignals = map[string]syscall.Signal{
 	"ABRT": syscall.SIGABRT,
 	"ALRM": syscall.SIGALRM,
@@ -65,9 +58,9 @@ var supportedSignals = map[string]syscall.Signal{
 	"USR2": syscall.SIGUSR2,
 }
 
-// setupProcessGroup puts timeout and the child in one process group in
-// background mode so the whole command can be signaled. It returns
-// (exitCode, ok); when ok is false, runCommand returns exitCode.
+// setupProcessGroup puts timeout in a process group in background mode.
+// The child joins this group, so timeout can signal the whole command.
+// If ok is false, runCommand returns exitCode.
 func (state *runnerState) setupProcessGroup() (int, bool) {
 	if state.config.Foreground {
 		return 0, true
@@ -92,12 +85,9 @@ func (state *runnerState) setupProcessGroup() (int, bool) {
 	return 0, true
 }
 
-// protectFromJobControlStop registers SIGTTIN and SIGTTOU on a monitor-held
-// channel in non-foreground mode so the monitor is not stopped when a background
-// child touches the controlling TTY. Registering via os/signal (rather than
-// signal.Ignore) matters because Go resets its handled signals to their default
-// dispositions in the child before exec, so the child does not inherit an
-// ignored disposition. Foreground mode keeps the default TTY behavior.
+// protectFromJobControlStop prevents a background command's TTY access from
+// stopping timeout. It uses os/signal so the child does not inherit these
+// signals as ignored. Foreground mode keeps the normal TTY behavior.
 func (state *runnerState) protectFromJobControlStop() {
 	if state.config.Foreground {
 		return
@@ -108,9 +98,8 @@ func (state *runnerState) protectFromJobControlStop() {
 	state.jobControlCh = channel
 }
 
-// releaseJobControlProtection stops the SIGTTIN/SIGTTOU notification installed by
-// protectFromJobControlStop. It is safe to call when protection was never
-// activated (foreground mode) and is idempotent.
+// releaseJobControlProtection removes the SIGTTIN and SIGTTOU handlers.
+// It is safe to call more than once or when protection was not enabled.
 func (state *runnerState) releaseJobControlProtection() {
 	if state.jobControlCh == nil {
 		return
@@ -120,7 +109,7 @@ func (state *runnerState) releaseJobControlProtection() {
 	state.jobControlCh = nil
 }
 
-// deliverSignal applies the GNU-compatible signal delivery policy.
+// deliverSignal sends a signal using GNU timeout-compatible behavior.
 func (state *runnerState) deliverSignal(cmd *exec.Cmd, sig syscall.Signal) {
 	if state.config.Foreground {
 		state.sendProcessSignal(cmd, sig)
@@ -128,9 +117,8 @@ func (state *runnerState) deliverSignal(cmd *exec.Cmd, sig syscall.Signal) {
 		return
 	}
 
-	// GNU timeout sends the signal both to the monitored process and to the
-	// shared process group. The direct signal covers edge cases where the command
-	// has changed process groups; SIGCONT below follows the same policy.
+	// Signal both the command and its group. The direct signal still reaches
+	// the command if it has moved to another process group.
 	state.sendProcessSignal(cmd, sig)
 	state.sendGroupSignal(sig)
 	state.suppressed = sig
@@ -152,8 +140,7 @@ func (state *runnerState) sendGroupSignal(sig syscall.Signal) {
 }
 
 func defaultGroupSignal(pgid int, sig syscall.Signal) {
-	// GNU timeout treats signal delivery as best effort; the command may have
-	// already exited or changed process groups by the time the signal is sent.
+	// Ignore the error because the command may have exited or changed groups.
 	_ = syscall.Kill(-pgid, sig)
 }
 

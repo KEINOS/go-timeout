@@ -7,11 +7,9 @@ import (
 	"syscall"
 )
 
-// supportedSignals is the Windows subset of the signal table. Windows lacks
-// POSIX job-control signals (CONT/STOP/TSTP/TTIN/TTOU/USR1/USR2), so they are
-// intentionally absent. Of these, only termination can actually be delivered to
-// another process (see deliverSignal); the rest are accepted for option parsing
-// compatibility but are mapped to process termination.
+// supportedSignals lists the signal names accepted on Windows.
+// Windows does not support POSIX job-control signals. Other accepted signals
+// are mapped to process termination by deliverSignal.
 var supportedSignals = map[string]syscall.Signal{
 	"ABRT": syscall.SIGABRT,
 	"ALRM": syscall.SIGALRM,
@@ -27,34 +25,28 @@ var supportedSignals = map[string]syscall.Signal{
 	"TRAP": syscall.SIGTRAP,
 }
 
-// platformState carries the Windows signal-delivery seam. Windows has only the
-// per-process signaler; there are no POSIX process groups, so the Unix
-// process-group signaler is absent.
+// platformState stores Windows-specific signal handling.
 type platformState struct {
 	signalProcess processSignalFunc
 }
 
-// setupProcessGroup is a no-op on Windows: there are no POSIX process groups,
-// so timeout signals only the direct command process. Descendants the command
-// spawns are not tracked. This is a documented portability limitation.
+// setupProcessGroup does nothing on Windows because POSIX process groups do
+// not exist. Timeout can signal only the direct command, not its child processes.
 func (state *runnerState) setupProcessGroup() (int, bool) {
 	return 0, true
 }
 
-// protectFromJobControlStop is a no-op on Windows: there are no POSIX
-// job-control signals (SIGTTIN/SIGTTOU), so the monitor cannot be stopped by a
-// background child's TTY access.
+// protectFromJobControlStop does nothing on Windows because SIGTTIN and
+// SIGTTOU do not exist.
 func (state *runnerState) protectFromJobControlStop() {}
 
-// releaseJobControlProtection is a no-op on Windows; see protectFromJobControlStop.
+// releaseJobControlProtection does nothing on Windows.
 func (state *runnerState) releaseJobControlProtection() {}
 
 // deliverSignal terminates the command process on timeout.
 //
-// Windows cannot deliver arbitrary POSIX signals to another process;
-// os.Process.Signal only honors Kill, which Go translates to TerminateProcess.
-// Every requested terminating signal is therefore mapped to termination. This
-// affects only the direct command process, not its descendants.
+// Windows cannot send POSIX signals to another process, so every requested
+// signal becomes SIGKILL. This affects only the direct command.
 func (state *runnerState) deliverSignal(cmd *exec.Cmd, _ syscall.Signal) {
 	state.sendProcessSignal(cmd, syscall.SIGKILL)
 }

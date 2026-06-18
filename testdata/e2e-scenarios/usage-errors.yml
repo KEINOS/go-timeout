@@ -10,7 +10,9 @@ cases:
       stdout:
         equals: ""
       stderr:
-        contains: ["missing operand"]
+        contains:
+          - "timeout: missing operand: usage error\n\nUsage:"
+          - "timeout [OPTION]... DURATION COMMAND"
   - name: missing command
     args: ["1s"]
     stdin: ""
@@ -29,6 +31,17 @@ cases:
         equals: ""
       stderr:
         contains: ["unrecognized option"]
+  - name: invalid short option shows help
+    args: ["-help"]
+    stdin: ""
+    want:
+      exit_code: 125
+      stdout:
+        equals: ""
+      stderr:
+        contains:
+          - "timeout: invalid option e: usage error\n\nUsage:"
+          - "timeout [OPTION]... DURATION COMMAND"
   - name: missing short kill-after argument
     args: ["-k"]
     stdin: ""

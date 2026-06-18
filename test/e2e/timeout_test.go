@@ -1,13 +1,10 @@
 //go:build e2e
 
 //nolint:tagliatelle // want snake_case YAML tags
-/*
-Package e2e_test contains the E2E test harness for `timeout` binary.
-
-Note: **For VSCode users**: To run each test via CodeLens, you need to pre-build
-the `timeout` binary. Press `command+shift+B` to trigger building the  binary in
-the `dist` directory.
-*/
+// Package e2e_test tests the timeout binary from end to end.
+//
+// VS Code CodeLens tests require a prebuilt binary in the dist directory.
+// Press Command+Shift+B to build it.
 package e2e_test
 
 import (
@@ -51,10 +48,6 @@ var (
 	errCaseWantRequired        = errors.New("case want is required")
 	errCaseExitCodeRequired    = errors.New("case want.exit_code is required")
 )
-
-// ============================================================================
-//  Test Section
-// ============================================================================
 
 func TestTimeout(t *testing.T) {
 	t.Parallel()
@@ -336,22 +329,14 @@ cases:
 	require.Equal(t, 0, *suite.Cases[0].Want.ExitCode)
 }
 
-// ============================================================================
-//  Setup Section
-// ============================================================================
-
-// ----------------------------------------------------------------------------
-//  YAML structure for test scenarios (in order of use)
-// ----------------------------------------------------------------------------
-
-// Suite represents a test suite containing multiple test cases.
+// Suite describes a group of test cases from a YAML file.
 type Suite struct {
 	Name    string        `yaml:"name"`
 	Timeout time.Duration `yaml:"timeout"`
 	Cases   []Case        `yaml:"cases"`
 }
 
-// Case represents a single test case with its configuration and expected outcomes.
+// Case describes one test case and its expected result.
 type Case struct {
 	Name            string            `yaml:"name"`
 	Args            []string          `yaml:"args"`
@@ -362,42 +347,40 @@ type Case struct {
 	Want            *Want             `yaml:"want"`
 }
 
-// Want represents the expected outcomes of a test case, including exit code and
-// assertions for stdout and stderr.
+// Want describes the expected exit code and output.
 type Want struct {
 	ExitCode *int       `yaml:"exit_code"`
 	Stdout   TextAssert `yaml:"stdout"`
 	Stderr   TextAssert `yaml:"stderr"`
 }
 
-// TextAssert represents the assertions for text output, allowing for equality,
-// containment, and regex matching.
+// TextAssert describes checks for one output stream.
 type TextAssert struct {
 	Equals   *string  `yaml:"equals"`
 	Contains []string `yaml:"contains"`
 	Matches  []string `yaml:"matches"`
 }
 
-// ----------------------------------------------------------------------------
-//  Helper functions for the test (alphabetical order)
-// ----------------------------------------------------------------------------
-
 func assertText(t *testing.T, streamName string, got string, want TextAssert) {
 	t.Helper()
 
 	if want.Equals != nil {
-		assert.Equal(t, *want.Equals, got, "%s should exactly match", streamName)
+		assert.Equal(t, *want.Equals, got,
+			"%s should exactly match", streamName)
 	}
 
 	for _, expected := range want.Contains {
-		assert.Contains(t, got, expected, "%s should contain expected text", streamName)
+		assert.Contains(t, got, expected,
+			"%s should contain expected text", streamName)
 	}
 
 	for _, pattern := range want.Matches {
 		compiledPattern, err := regexp.Compile(pattern)
-		require.NoError(t, err, "%s has invalid regex pattern: %s", streamName, pattern)
+		require.NoError(t, err,
+			"%s has invalid regex pattern: %s", streamName, pattern)
 
-		assert.Regexp(t, compiledPattern, got, "%s should match regex pattern", streamName)
+		assert.Regexp(t, compiledPattern, got,
+			"%s should match regex pattern", streamName)
 	}
 }
 
@@ -470,7 +453,6 @@ func getPathTargetBin(t *testing.T) string {
 func loadTestScenario(t *testing.T, path string) *Suite {
 	t.Helper()
 
-	// Load the YAML file for the test scenario
 	path = filepath.Clean(path)
 
 	data, err := os.ReadFile(path)
@@ -485,7 +467,7 @@ func loadTestScenario(t *testing.T, path string) *Suite {
 func parseCaseSignal(value string) (os.Signal, error) {
 	normalized := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(value)), "SIG")
 
-	// Keep this list narrow until a scenario needs another signal.
+	// Add signals only when a test scenario needs them.
 	switch normalized {
 	case "HUP":
 		return syscall.SIGHUP, nil
@@ -503,7 +485,7 @@ func parseCaseSignal(value string) (os.Signal, error) {
 func resolvedPath(t *testing.T, path string) string {
 	t.Helper()
 
-	// Error if the path contains control characters
+	// Reject control characters before using the path.
 	for _, char := range path {
 		if unicode.IsControl(char) {
 			t.Fatalf("path contains control characters: %q", path)
@@ -524,7 +506,7 @@ func scheduleCaseSignal(t *testing.T, process *os.Process, testCase Case) contex
 		return func() {}
 	}
 
-	// Re-parse here so direct Case construction stays guarded like YAML input.
+	// Parse again to validate Case values created without YAML.
 	sig, err := parseCaseSignal(testCase.SendSignal)
 	require.NoError(t, err, "invalid send_signal for test case %q", testCase.Name)
 
@@ -536,7 +518,7 @@ func scheduleCaseSignal(t *testing.T, process *os.Process, testCase Case) contex
 
 		select {
 		case <-timer.C:
-			// Signal the monitor; timeout is responsible for forwarding to children.
+			// Signal timeout, which forwards the signal to the command.
 			_ = process.Signal(sig)
 		case <-ctx.Done():
 		}

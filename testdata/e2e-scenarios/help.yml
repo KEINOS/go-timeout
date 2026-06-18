@@ -8,6 +8,23 @@ cases:
     want:
       exit_code: 0
       stdout:
-        contains: ["Usage:", "timeout [OPTION]... DURATION COMMAND"]
+        contains:
+          - "Usage:"
+          - "timeout [OPTION]... DURATION COMMAND [ARG]..."
+          - "-h, --help"
+          - "display this help and exit"
+      stderr:
+        equals: ""
+  - name: show short help
+    args: ["-h"]
+    stdin: ""
+    want:
+      exit_code: 0
+      stdout:
+        contains:
+          - "Usage:"
+          - "timeout [OPTION]... DURATION COMMAND [ARG]..."
+          - "-h, --help"
+          - "display this help and exit"
       stderr:
         equals: ""

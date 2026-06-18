@@ -3,39 +3,71 @@ package timeout_test
 import (
 	"bytes"
 	"fmt"
+	"strings"
 
 	"github.com/KEINOS/go-timeout/timeout"
 )
 
 func ExampleParse() {
-	config, err := timeout.Parse([]string{"-k", "1s", "-s", "TERM", "2s", "printf", "ok"})
+	cmdArgs := []string{
+		"-k", "1s", "-s", "TERM", "2s",
+		"printf", "ok",
+	}
 
-	fmt.Println(err)
-	fmt.Println(config.KillAfter)
-	fmt.Println(config.Duration)
-	fmt.Println(config.Command)
+	config, err := timeout.Parse(cmdArgs)
+
+	fmt.Println("error:", err)
+	fmt.Println("kill after:", config.KillAfter)
+	fmt.Println("duration:", config.Duration)
+	fmt.Println("command:", config.Command)
 	// Output:
-	// <nil>
-	// 1s
-	// 2s
-	// [printf ok]
+	// error: <nil>
+	// kill after: 1s
+	// duration: 2s
+	// command: [printf ok]
+}
+
+func ExampleRun() {
+	cmdArgs := []string{
+		"-k", "1s", "-s", "TERM", "2s",
+		"go", "version",
+	}
+
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	exitCode := timeout.Run(cmdArgs, timeout.Streams{
+		Stdin:  bytes.NewReader(nil),
+		Stdout: stdout,
+		Stderr: stderr,
+	})
+
+	output := strings.Join(strings.Fields(stdout.String())[0:2], " ")
+
+	fmt.Println("exit code:", exitCode)
+	fmt.Println(strings.TrimSpace("stderr: " + stderr.String()))
+	fmt.Println(strings.TrimSpace("stdout: " + output))
+	// Output:
+	// exit code: 0
+	// stderr:
+	// stdout: go version
 }
 
 func ExampleRun_help() {
 	stdout := new(bytes.Buffer)
 	stderr := new(bytes.Buffer)
 
-	code := timeout.Run([]string{"--help"}, timeout.Streams{
+	exitCode := timeout.Run([]string{"--help"}, timeout.Streams{
 		Stdin:  bytes.NewReader(nil),
 		Stdout: stdout,
 		Stderr: stderr,
 	})
 
-	fmt.Println(code)
-	fmt.Println(stderr.String())
-	fmt.Println(stdout.String()[:6])
+	fmt.Println("exit code:", exitCode)
+	fmt.Println(strings.TrimSpace("stderr: " + stderr.String()))
+	fmt.Println(strings.TrimSpace("stdout: " + stdout.String()[:6]))
 	// Output:
-	// 0
-	//
-	// Usage:
+	// exit code: 0
+	// stderr:
+	// stdout: Usage:
 }

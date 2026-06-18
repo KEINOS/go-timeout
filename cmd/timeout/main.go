@@ -1,4 +1,4 @@
-// Package main provides the timeout command entry point.
+// Package main starts the timeout command.
 package main
 
 import (

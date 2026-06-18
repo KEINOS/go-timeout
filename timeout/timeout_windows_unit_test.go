@@ -21,15 +21,11 @@ const (
 
 	durationFastTimeout = "0.05s"
 
-	// signalNameTERM avoids repeating the "TERM" literal across cases (goconst).
+	// signalNameTERM avoids repeating the same signal name in test cases.
 	signalNameTERM = "TERM"
 )
 
 var errTestStreamWrite = errors.New("test stream write")
-
-// ============================================================================
-//  Parser and pure-logic tests (portable behavior verified on Windows)
-// ============================================================================
 
 func TestParseWindows(t *testing.T) {
 	t.Parallel()
@@ -63,12 +59,12 @@ func TestParseDurationWindows(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]time.Duration{
-		"2":   2 * time.Second,
-		"2s":  2 * time.Second,
+		"2":    2 * time.Second,
+		"2s":   2 * time.Second,
 		"1.5m": 90 * time.Second,
 		"0.5h": 30 * time.Minute,
-		"1d":  24 * time.Hour,
-		"0":   0,
+		"1d":   24 * time.Hour,
+		"0":    0,
 	}
 
 	for in, want := range cases {
@@ -102,7 +98,7 @@ func TestParseSignalWindows(t *testing.T) {
 	}
 }
 
-// Job-control signal names are not supported on Windows; parsing them must fail.
+// TestParseSignalRejectsUnsupportedOnWindows checks Unix-only signal names.
 func TestParseSignalRejectsUnsupportedOnWindows(t *testing.T) {
 	t.Parallel()
 
@@ -179,11 +175,7 @@ func TestVersionFromBuildInfoWindows(t *testing.T) {
 	require.Equal(t, defaultVersion, versionFromBuildInfo(nil, false))
 }
 
-// ============================================================================
-//  Windows platform-behavior tests
-// ============================================================================
-
-// setupProcessGroup is a no-op on Windows and must always succeed.
+// TestSetupProcessGroupNoOpWindows checks that Windows needs no process group.
 func TestSetupProcessGroupNoOpWindows(t *testing.T) {
 	t.Parallel()
 
@@ -196,8 +188,7 @@ func TestSetupProcessGroupNoOpWindows(t *testing.T) {
 	require.Zero(t, state.pgid)
 }
 
-// deliverSignal must terminate the command process regardless of the requested
-// signal, because Windows cannot deliver arbitrary POSIX signals.
+// TestDeliverSignalTerminatesWindows checks that every signal ends the process.
 func TestDeliverSignalTerminatesWindows(t *testing.T) {
 	t.Parallel()
 
@@ -214,24 +205,35 @@ func TestDeliverSignalTerminatesWindows(t *testing.T) {
 	require.Equal(t, []syscall.Signal{syscall.SIGKILL, syscall.SIGKILL}, got)
 }
 
-// ============================================================================
-//  End-to-end behavior on Windows using the cmd interpreter
-// ============================================================================
-
 func TestRunStaticOutputWindows(t *testing.T) {
 	t.Parallel()
 
-	stdout := new(bytes.Buffer)
-	stderr := new(bytes.Buffer)
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "help", args: []string{optionHelp}},
+		{name: "short help", args: []string{"-h"}},
+	}
 
-	code := Run([]string{optionHelp}, Streams{
-		Stdin:  bytes.NewReader(nil),
-		Stdout: stdout,
-		Stderr: stderr,
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.Equal(t, ExitSuccess, code)
-	require.Contains(t, stdout.String(), "Usage:")
+			stdout := new(bytes.Buffer)
+			stderr := new(bytes.Buffer)
+
+			code := Run(tt.args, Streams{
+				Stdin:  bytes.NewReader(nil),
+				Stdout: stdout,
+				Stderr: stderr,
+			})
+
+			require.Equal(t, ExitSuccess, code)
+			require.Contains(t, stdout.String(), "Usage:")
+			require.Empty(t, stderr.String())
+		})
+	}
 }
 
 func TestRunCommandExitStatusWindows(t *testing.T) {
@@ -261,12 +263,74 @@ func TestRunCommandNotFoundWindows(t *testing.T) {
 	require.Contains(t, stderr.String(), "failed to run command")
 }
 
-// TestRunCommandTimeoutWindows verifies the command is terminated and the
-// timed-out exit code is returned. It re-execs the test binary as a helper that
-// sleeps, avoiding dependence on external sleep utilities.
+func TestRunInvalidOptionPrintsHelpWindows(t *testing.T) {
+	t.Parallel()
+
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	code := Run([]string{"-help"}, Streams{
+		Stdin:  bytes.NewReader(nil),
+		Stdout: stdout,
+		Stderr: stderr,
+	})
+
+	require.Equal(t, ExitInternalFailure, code)
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "timeout: invalid option e: usage error\n\nUsage:")
+	require.Contains(t, stderr.String(), "timeout [OPTION]... DURATION COMMAND")
+}
+
+func TestRunMissingOperandPrintsHelpWindows(t *testing.T) {
+	t.Parallel()
+
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	code := Run(nil, Streams{
+		Stdin:  bytes.NewReader(nil),
+		Stdout: stdout,
+		Stderr: stderr,
+	})
+
+	require.Equal(t, ExitInternalFailure, code)
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "timeout: missing operand: usage error\n\nUsage:")
+	require.Contains(t, stderr.String(), "timeout [OPTION]... DURATION COMMAND")
+}
+
+func TestRunCommandArgumentErrorsPrintHelpWindows(t *testing.T) {
+	t.Parallel()
+
+	for _, args := range [][]string{
+		nil,
+		{"1s"},
+		{"--bogus"},
+		{"bad", commandCmd},
+		{optionSignal + "=NOPE", "1s", commandCmd},
+	} {
+		stdout := new(bytes.Buffer)
+		stderr := new(bytes.Buffer)
+
+		code := Run(args, Streams{
+			Stdin:  bytes.NewReader(nil),
+			Stdout: stdout,
+			Stderr: stderr,
+		})
+
+		require.Equal(t, ExitInternalFailure, code)
+		require.Empty(t, stdout.String())
+		require.Contains(t, stderr.String(), "usage error",
+			"returned error should contain the error reason")
+		require.Contains(t, stderr.String(), HelpText(),
+			"returned error should contain the help text")
+	}
+}
+
+// TestRunCommandTimeoutWindows checks termination and the timeout exit code.
+// It runs the test binary again as a sleeping helper.
 func TestRunCommandTimeoutWindows(t *testing.T) {
-	// No t.Parallel(): this test calls t.Setenv, which Go forbids in parallel
-	// tests.
+	// t.Setenv cannot be used in a parallel test.
 	if os.Getenv("GO_TIMEOUT_HELPER_PROCESS") == "sleep" {
 		time.Sleep(time.Hour)
 
@@ -290,10 +354,6 @@ func TestRunCommandTimeoutWindows(t *testing.T) {
 
 	require.Equal(t, ExitTimedOut, code)
 }
-
-// ============================================================================
-//  Helpers
-// ============================================================================
 
 type errorWriter struct{}
 

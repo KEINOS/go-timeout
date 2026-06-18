@@ -14,7 +14,7 @@ all: build
 build: build-cmd test-build-cmd
 
 build-cmd:
-	@printf "* Building the project..."
+	@echo "* Building the project..."
 	@mkdir -p ./dist  || (echo "FAIL: creating dist directory" && exit 1)
 	@CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o ./dist/timeout ./cmd/timeout && echo "OK" || (echo "FAIL: building the project" && exit 1)
 
@@ -94,7 +94,7 @@ lint-yaml: check-yamlfmt-exist
 
 lint-yaml-check: check-yamlfmt-exist
 	@echo "* Checking YAML formatting..."
-	@yamlfmt -lint .
+	@yamlfmt -lint . && echo "0 issues."
 
 test:
 	@echo "* Running unit tests with coverage and race detection..."

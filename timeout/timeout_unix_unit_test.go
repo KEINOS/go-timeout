@@ -21,10 +21,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ============================================================================
-//  Constants Section
-// ============================================================================
-
 const (
 	commandPrintf = "printf"
 	commandSleep  = "sleep"
@@ -33,23 +29,13 @@ const (
 	durationFastTimeout = "0.01s"
 	pgidTest            = 424242
 
-	// waitForCommandTimeout fails the self-signal test fast on a slow CI host
-	// instead of hanging until the global go test timeout. It is generous
-	// relative to the millisecond-scale signal delivery the test exercises.
+	// waitForCommandTimeout prevents the self-signal test from hanging on slow CI.
 	waitForCommandTimeout = 5 * time.Second
 )
-
-// ============================================================================
-//  Variables Section
-// ============================================================================
 
 var errTestStartFailure = errors.New("test start failure")
 var errTestStreamWrite = errors.New("test stream write")
 var errTestSyscallFailure = errors.New("test syscall failure")
-
-// ============================================================================
-//  Test Section
-// ============================================================================
 
 func TestParse(t *testing.T) {
 	t.Parallel()
@@ -363,16 +349,14 @@ func TestProtectFromJobControlStopBackground(t *testing.T) {
 	require.Nil(t, state.jobControlCh)
 	require.Equal(t, 1, recorder.stopCount)
 
-	// A second release is a no-op so the deferred cleanup is always safe.
+	// Check that repeated cleanup is safe.
 	state.releaseJobControlProtection()
 
 	require.Equal(t, 1, recorder.stopCount)
 }
 
-// TestJobControlHelperProcess is the child half of
-// TestRunDoesNotLeakJobControlIgnoreToChild. It exits non-zero if it inherited
-// SIGTTIN or SIGTTOU as ignored, proving the monitor's os/signal registration
-// does not leak an ignored disposition into the executed command.
+// TestJobControlHelperProcess checks the signal state inherited by the child.
+// It fails if SIGTTIN or SIGTTOU is ignored.
 func TestJobControlHelperProcess(t *testing.T) {
 	t.Parallel()
 
@@ -392,9 +376,7 @@ func TestRunDoesNotLeakJobControlIgnoreToChild(t *testing.T) {
 	stdout := new(bytes.Buffer)
 	stderr := new(bytes.Buffer)
 
-	// Non-foreground (no -f) so the monitor activates SIGTTIN/SIGTTOU protection
-	// before forking the helper. The helper verifies it did not inherit those as
-	// ignored.
+	// Run without -f to enable SIGTTIN and SIGTTOU protection.
 	args := []string{
 		"5s",
 		"env", "GO_TIMEOUT_HELPER_PROCESS=job-control",
@@ -498,6 +480,68 @@ func TestRunStaticOutput(t *testing.T) {
 			require.Equal(t, tt.wantCode, got)
 			require.Contains(t, stdout.String(), tt.wantStdout)
 			require.Contains(t, stderr.String(), tt.wantStderr)
+		})
+	}
+}
+
+func TestRunInvalidOptionPrintsHelp(t *testing.T) {
+	t.Parallel()
+
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	got := Run([]string{"-help"}, Streams{
+		Stdin:  bytes.NewReader(nil),
+		Stdout: stdout,
+		Stderr: stderr,
+	})
+
+	require.Equal(t, ExitInternalFailure, got)
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "timeout: invalid option e: usage error\n\nUsage:")
+	require.Contains(t, stderr.String(), "timeout [OPTION]... DURATION COMMAND")
+}
+
+func TestRunMissingOperandPrintsHelp(t *testing.T) {
+	t.Parallel()
+
+	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
+
+	got := Run(nil, Streams{
+		Stdin:  bytes.NewReader(nil),
+		Stdout: stdout,
+		Stderr: stderr,
+	})
+
+	require.Equal(t, ExitInternalFailure, got)
+	require.Empty(t, stdout.String())
+	require.Contains(t, stderr.String(), "timeout: missing operand: usage error\n\nUsage:")
+	require.Contains(t, stderr.String(), "timeout [OPTION]... DURATION COMMAND")
+}
+
+func TestRunCommandArgumentErrorsPrintHelp(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range parseUsageErrorTestCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stdout := new(bytes.Buffer)
+			stderr := new(bytes.Buffer)
+
+			got := Run(tt.args, Streams{
+				Stdin:  bytes.NewReader(nil),
+				Stdout: stdout,
+				Stderr: stderr,
+			})
+
+			require.Equal(t, ExitInternalFailure, got)
+			require.Empty(t, stdout.String())
+			require.Contains(t, stderr.String(), "usage error",
+				"returned error should contain the error reason")
+			require.Contains(t, stderr.String(), HelpText(),
+				"returned error should contain the help text")
 		})
 	}
 }
@@ -712,9 +756,8 @@ func TestStopTimerAllowsNil(t *testing.T) {
 
 //nolint:paralleltest // no parallel: installs process-wide signal handlers and self-signals
 func TestWaitForCommandForwardsReceivedSignal(t *testing.T) {
-	// Pre-register our own handler for SIGUSR1 before anything else so the
-	// default (fatal) disposition is suppressed for the whole test, even in
-	// the window before waitForCommand installs its own notifier.
+	// Handle SIGUSR1 before waitForCommand starts, because its default action
+	// would end the test process.
 	selfCh := make(chan os.Signal, 1)
 	signal.Notify(selfCh, syscall.SIGUSR1)
 
@@ -742,8 +785,7 @@ func TestWaitForCommandForwardsReceivedSignal(t *testing.T) {
 		Stdout: io.Discard,
 		Stderr: io.Discard,
 	})
-	// Record the forwarded signal, then deliver it to the real child so the
-	// child exits and waitForCommand's done branch ends the loop.
+	// Record the signal and send it to the child so the wait loop can finish.
 	state.signalProcess = func(child *exec.Cmd, sig syscall.Signal) {
 		select {
 		case forwarded <- sig:
@@ -753,8 +795,7 @@ func TestWaitForCommandForwardsReceivedSignal(t *testing.T) {
 		_ = child.Process.Signal(sig)
 	}
 
-	// Repeatedly signal our own process until waitForCommand has installed its
-	// notifier and forwarded the signal into the select loop.
+	// Keep sending until waitForCommand receives and forwards the signal.
 	stopSending := make(chan struct{})
 
 	go signalSelfUntil(stopSending)
@@ -805,10 +846,6 @@ func TestNewStoppedTimerDoesNotFire(t *testing.T) {
 	case <-time.After(20 * time.Millisecond):
 	}
 }
-
-// ============================================================================
-//  Helpers Section
-// ============================================================================
 
 type parseTestCase struct {
 	name string
@@ -906,9 +943,8 @@ type jobControlRecorder struct {
 	stopCount int
 }
 
-// withJobControlSeams swaps the jobControlNotify/jobControlStop seams for
-// recorders so the activation and cleanup can be asserted without registering
-// real process-wide signal handlers. The originals are restored on cleanup.
+// withJobControlSeams records job-control calls without changing real handlers.
+// It restores the original functions during cleanup.
 func withJobControlSeams(t *testing.T) *jobControlRecorder {
 	t.Helper()
 
@@ -987,10 +1023,8 @@ func runTermIgnoringCommand(t *testing.T, streams Streams) int {
 	}
 }
 
-// runWaitForCommandGuarded runs the blocking waitForCommand loop under a
-// deadline so a missed signal delivery on a slow CI host fails fast instead of
-// hanging until the global test timeout. On timeout it kills the child so the
-// done branch unblocks and neither the goroutine nor the child leaks.
+// runWaitForCommandGuarded adds a deadline to the blocking wait loop.
+// If the deadline passes, it kills the child and cleans up the goroutine.
 func runWaitForCommandGuarded(t *testing.T, state *runnerState, cmd *exec.Cmd) int {
 	t.Helper()
 
@@ -1089,10 +1123,6 @@ func withProcessGroupFuncs(
 		syscallGetpgid = oldGetpgid
 	})
 }
-
-// ============================================================================
-//  Data Providers Section
-// ============================================================================
 
 var parseTestCases = []parseTestCase{
 	{
@@ -1241,6 +1271,13 @@ var runStaticOutputTestCases = []runStaticOutputTestCase{
 	{
 		name:       "help",
 		args:       []string{optionHelp},
+		wantCode:   ExitSuccess,
+		wantStdout: "Usage:",
+		wantStderr: "",
+	},
+	{
+		name:       "short help",
+		args:       []string{"-h"},
 		wantCode:   ExitSuccess,
 		wantStdout: "Usage:",
 		wantStderr: "",
