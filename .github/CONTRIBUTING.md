@@ -17,7 +17,8 @@ tests, and a YAML-driven end-to-end harness.
 
 | Path | Purpose |
 | ---- | ------- |
-| `timeout/timeout.go` | Core library: parsing, signal handling, runner (portable) |
+| `timeout/timeout.go` | Portable parsing, public API, streams, timers, and signal helpers |
+| `timeout/runner_state.go` | Portable command runner and per-run state |
 | `timeout/timeout_unix.go` | Unix-only process-group and signal behavior (`//go:build unix`) |
 | `timeout/timeout_windows.go` | Windows best-effort behavior (`//go:build windows`) |
 | `timeout/timeout_unix_unit_test.go` | Unix unit tests for parsing and run behavior (`//go:build unix`) |
@@ -31,6 +32,18 @@ tests, and a YAML-driven end-to-end harness.
 | `Dockerfile` | Multi-stage build and scratch image |
 | `.github/workflows/` | CI workflows |
 | `.golangci.yml` | Go lint configuration |
+
+## Development Requirements
+
+Use the Go version declared in `go.mod`. The repository checks also require
+these commands to be available on `PATH`:
+
+- `golangci-lint`
+- `checkmake`
+- `markdownlint-cli2`
+- `yamlfmt`
+
+Docker is required only for `make build-img`.
 
 ## Development Checks
 
@@ -65,4 +78,4 @@ Windows is supported on a best-effort basis. Platform-specific code is isolated
 behind `//go:build unix` and `//go:build windows` files so the GNU-compatible
 Unix behavior is never weakened. Windows has documented limitations (no POSIX
 process groups or signals, so the command is force-terminated and job-control
-signal names are rejected); see the Platform Support section of `README.md`.
+signal names are rejected).
